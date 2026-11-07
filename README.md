@@ -131,6 +131,8 @@ Set-Clipboard $env:TG_SECURITY_AUDIT_TOKEN
 .\tg_server.bat
 ```
 
+On Windows you can instead double-click **`tg_server_audit.bat`**: it creates a credential once in `tg_audit_token.txt` (git-ignored), sets `TG_SECURITY_AUDIT_TOKEN` from it and starts the server. Open that file to copy the credential; delete it to rotate.
+
 Wait for any running jobs before restarting an existing server. Keep the tunnel running and preserve `.env` and `backend/tartangrid.db`. Store/share the reader credential privately with authorized viewers; the example keeps it in that PowerShell process and copies it to the clipboard for pasting into the Dashboard's **Security audit** field. Do not put it in a URL, screenshot or commit. Generating a new token before a later restart rotates reader access without deleting logs.
 
 On the Dashboard, paste the credential and click **Unlock**. It is used only by the audit read request, stays in page memory, and is forgotten on **Lock**, reload or navigation. The panel polls every five seconds. Failed reads clear the displayed evidence and show **Security events unavailable**; they do not show fake zeroes. Mock mode provides no security evidence.

@@ -9,3 +9,6 @@ __pycache__/
 
 # Windows helper logs
 tg_tunnel.log
+
+# Security audit reader credential (created by tg_server_audit.bat)
+tg_audit_token.txt
