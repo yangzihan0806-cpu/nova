@@ -41,4 +41,10 @@
 - [x] Add disposable-server demo that checks accepted/rejected requests, redaction and no jobs/tasks from denied requests.
 - [x] Document token setup, audit-only scope, lifetime counts, storage-failure behavior, deployment and tests; preserve latest field measurements.
 - [x] Run demo + existing 13-stage smoke on fresh loopback databases; actual browser worker computes accepted task; run Python/Node/whitespace checks.
-- [ ] Request fresh whole-branch review, fix important findings with regression tests, commit and create PR. Do not merge or deploy.
+- [x] Request fresh whole-branch review, fix important findings with regression tests, commit and create PR. Do not merge or deploy.
+
+## Delivery evidence
+
+PR: https://github.com/yangzihan0806-cpu/nova/pull/16 (open for review; not merged or deployed).
+
+Final merged-tree validation: 179 Python tests including 34 audit cases, 8 Node identity tests, 7/7 audit demo, 13/13 existing contract smoke, and all five browser acceptance groups. Independent review has no remaining blocking findings. Real browser computation completed during UI validation. Tests used disposable cloud databases, not the field service.
