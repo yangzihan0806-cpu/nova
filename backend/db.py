@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS workers (
   token            TEXT NOT NULL,
   slots            INTEGER NOT NULL DEFAULT 1,
   has_gpu          INTEGER NOT NULL DEFAULT 0,
-  task_types       TEXT NOT NULL,            -- JSON 数组，服务端与 allowlist 取交集
+  task_types       TEXT NOT NULL,            -- JSON array, intersected with the server allowlist
   client_info      TEXT,
   paused           INTEGER NOT NULL DEFAULT 0,
   disconnected     INTEGER NOT NULL DEFAULT 0,
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   done_by       TEXT,
   runtime_ms    INTEGER,
   done_at       REAL,
-  done_seq      INTEGER                           -- = 完成时插入的 task_done 事件 id
+  done_seq      INTEGER                           -- = id of the task_done event inserted on completion
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, job_id, idx);
 CREATE TABLE IF NOT EXISTS events (
