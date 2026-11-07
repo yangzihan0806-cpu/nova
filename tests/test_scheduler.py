@@ -666,7 +666,7 @@ def test_contribution_zero_totals_and_old_client_sessions(scheduler):
     assert v['devices'][0]['owner'] is None
 
 
-def test_contribution_legacy_results_are_computed_without_backfill(legacy_database):
+def test_contribution_legacy_results_are_backfilled_on_startup(legacy_database):
     import scheduler as s
     db=legacy_database
     db.init_db()
@@ -676,7 +676,9 @@ def test_contribution_legacy_results_are_computed_without_backfill(legacy_databa
     assert v['devices'][0]['compute_ms']==20 and v['devices'][0]['online_s']==20
     assert s.contributions(110,110,130)['totals']['verified_miter']==0.000006
     with db.tx() as c:
-        assert c.execute('SELECT count(*) FROM tasks WHERE credit_iters IS NULL').fetchone()[0]==2
+        # Backfilled once by init_db so reads never re-parse legacy result_json under the lock.
+        assert c.execute('SELECT count(*) FROM tasks WHERE credit_iters IS NULL').fetchone()[0]==0
+        assert c.execute('SELECT sum(credit_iters) FROM tasks').fetchone()[0]==21
         assert c.execute('SELECT device_id FROM workers').fetchone()[0] is None
 
 

@@ -130,6 +130,19 @@ def init_db():
                     if name not in columns:
                         _conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
             _conn.execute("CREATE INDEX IF NOT EXISTS idx_workers_device ON workers(device_id)")
+            # Covering index for the contributions aggregate, so it never reads the large
+            # result_json rows (the tasks table is ~140 MB after a demo afternoon).
+            _conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_credit "
+                          "ON tasks(status, done_by, done_at, credit_iters, runtime_ms)")
+            # One-time backfill of credit for results accepted before credit_iters existed.
+            # Without it, every /api/contributions read re-parses all legacy result_json
+            # under the global DB lock (~2 s for ~2000 demo tiles; the Dashboard polls it
+            # every 5 s), stalling leases and heartbeats for every worker. Same values
+            # as the read-time fallback, which stays in place as a safety net.
+            _conn.execute(
+                "UPDATE tasks SET credit_iters = legacy_credit_iters(result_json) "
+                "WHERE status='done' AND credit_iters IS NULL AND result_json IS NOT NULL"
+            )
             _conn.execute("COMMIT")
         except BaseException:
             if _conn.in_transaction:

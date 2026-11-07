@@ -266,7 +266,7 @@ ALTER TABLE tasks ADD COLUMN credit_iters INTEGER;
 CREATE INDEX IF NOT EXISTS idx_workers_device ON workers(device_id);
 ```
 
-旧 worker 的 `device_id IS NULL` 在查询时按 `'wkr:' || id` 处理。旧的已完成 task 若 `credit_iters IS NULL`，贡献查询当场从存储的 `result_json` 求和，不改写历史数据。
+旧 worker 的 `device_id IS NULL` 在查询时按 `'wkr:' || id` 处理。旧的已完成 task 若 `credit_iters IS NULL`，`init_db()` 启动时**一次性**用存储的 `result_json` 求和补写 `credit_iters`（数值与当场求和相同；查询里保留同样的兜底计算）。原因：当场求和会在全局锁内重算全部旧结果，现场约 2000 个 tile 时每次约 2 秒，Dashboard 每 5 秒轮询一次，会卡住所有 worker 的 lease 和心跳。
 
 Worker 的派生状态（API 输出用）：
 
