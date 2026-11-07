@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TartanGrid — Dashboard</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site"></header>
+  <main>
+    <section class="cards">
+      <div class="card accent"><div class="label">Online nodes</div><div class="value num" id="c-online">—</div></div>
+      <div class="card"><div class="label">Slots online</div><div class="value num" id="c-slots">—</div></div>
+      <div class="card"><div class="label">Active jobs</div><div class="value num" id="c-jobs">—</div></div>
+      <div class="card"><div class="label">Tasks done</div><div class="value num" id="c-done">—</div></div>
+      <div class="card"><div class="label">Offline / left</div><div class="value num" id="c-off">—</div></div>
+    </section>
+
+    <div class="grid-2">
+      <div class="stack">
+        <section class="panel">
+          <div class="panel-head"><h2>Nodes</h2><span class="muted small" id="server-time"></span></div>
+          <table>
+            <thead>
+              <tr><th>Node</th><th>Type</th><th>Status</th><th class="num">Slots</th><th class="num">Tasks done</th><th>Heartbeat</th><th>Current task</th></tr>
+            </thead>
+            <tbody id="nodes"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><h2>Recent jobs</h2><a id="new-job-link" href="new.html">+ New job</a></div>
+          <table>
+            <thead><tr><th>Job</th><th>Status</th><th>Progress</th><th class="num">Tiles</th><th>Size</th><th>Created</th></tr></thead>
+            <tbody id="jobs"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </section>
+      </div>
+
+      <div class="stack">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Live events</h2>
+            <label class="check"><input type="checkbox" id="hide-noisy" checked> Hide routine lease/done</label>
+          </div>
+          <div class="muted small" id="hidden-count"></div>
+          <ul class="events tall" id="events"></ul>
+        </section>
+
+        <section class="panel">
+          <h2>Resource connectors</h2>
+          <ul class="connectors">
+            <li><span>Browser CPU</span><span id="conn-browser" class="conn-none">none online</span></li>
+            <li><span>Native CPU</span><span id="conn-native" class="conn-none">none online</span></li>
+            <li><span>GPU pool</span><span class="conn-planned">Planned / Not connected</span></li>
+            <li><span>CMU HPC (Slurm)</span><span class="conn-planned">Planned, requires admin approval</span></li>
+          </ul>
+        </section>
+      </div>
+    </div>
+  </main>
+  <footer class="site"></footer>
+
+  <script src="common.js"></script>
+  <script>
+    "use strict";
+    TG.renderChrome("dashboard");
+    TG.$("#new-job-link").href = TG.link("/new.html");
+    const el = TG.el;
+
+    // One error slot per poller so a success in one doesn't hide a failure in another.
+    const errors = {};
+    const onError = (key) => (e) => {
+      errors[key] = e;
+      const any = Object.values(errors).find(Boolean);
+      TG.setBanner(any ? "API unreachable or returned an error — retrying… (" + any.message + ")" : null);
+    };
+
+    // ---------- stats ----------
+    async function pollStats() {
+      const s = await TG.api("/api/stats");
+      const t = s.totals || {};
+      TG.$("#c-online").textContent = t.online ?? 0;
+      TG.$("#c-slots").textContent = t.slots_online ?? 0;
+      TG.$("#c-jobs").textContent = t.active_jobs ?? 0;
+      TG.$("#c-done").textContent = TG.fmtInt(t.tasks_done ?? 0);
+      TG.$("#c-off").textContent = (t.offline ?? 0) + " / " + (t.left ?? 0);
+      TG.$("#server-time").textContent = s.server_time ? "server time " + TG.fmtTime(s.server_time) : "";
+
+      const workers = s.workers || [];
+      TG.assignWorkerColors(workers);
+      const rows = workers.map((w) =>
+        el("tr", null,
+          el("td", null, TG.workerDot(w.worker_id), " ", el("strong", null, w.name),
+            el("div", { class: "muted small mono" }, w.worker_id)),
+          el("td", null, TG.typeBadge(w.worker_type)),
+          el("td", null, TG.statusBadge(w.status)),
+          el("td", { class: "num" }, w.slots),
+          el("td", { class: "num" }, TG.fmtInt(w.tasks_done)),
+          el("td", { class: "mono small" }, TG.fmtAgo(w.last_heartbeat_age_s)),
+          el("td", { class: "mono small" },
+            (w.current_task_ids && w.current_task_ids.length) ? w.current_task_ids.map((id) => "#" + id).join(", ") : "—")));
+      TG.$("#nodes").replaceChildren(...(rows.length ? rows :
+        [el("tr", null, el("td", { colspan: 7, class: "empty" }, "No nodes yet. Open Contribute on a device, or start a native worker."))]));
+
+      for (const type of ["browser", "native"]) {
+        const n = workers.filter((w) => w.worker_type === type && w.status === "online").length;
+        const c = TG.$("#conn-" + type);
+        c.textContent = n ? `connected · ${n} online` : "none online";
+        c.className = n ? "conn-on" : "conn-none";
+      }
+    }
+
+    // ---------- jobs ----------
+    async function pollJobs() {
+      const r = await TG.api("/api/jobs");
+      const jobs = (r && r.jobs) || [];
+      const rows = jobs.map((j) => {
+        const pct = j.task_count ? Math.round((100 * j.done_count) / j.task_count) : 0;
+        const p = j.params || {};
+        return el("tr", null,
+          el("td", null, el("a", { class: "mono", href: TG.link("/job.html?id=" + encodeURIComponent(j.job_id)) }, j.job_id)),
+          el("td", null, TG.statusBadge(j.status)),
+          el("td", { style: { minWidth: "110px" } },
+            el("div", { class: "progress" }, el("div", { style: { width: pct + "%" } }))),
+          el("td", { class: "num" }, `${j.done_count}/${j.task_count}`),
+          el("td", { class: "mono small" }, p.width ? `${p.width}×${p.height} · it ${p.max_iter}` : "—"),
+          el("td", { class: "mono small" }, TG.fmtTime(j.created_at)));
+      });
+      TG.$("#jobs").replaceChildren(...(rows.length ? rows :
+        [el("tr", null, el("td", { colspan: 6, class: "empty" }, "No jobs yet."))]));
+    }
+
+    // ---------- events ----------
+    const feed = new TG.EventFeed(TG.$("#events"), {
+      hideNoisyEl: TG.$("#hide-noisy"), countEl: TG.$("#hidden-count"), max: 100,
+    });
+
+    TG.startPolling(pollStats, 1000, onError("stats"));
+    TG.startPolling(() => feed.poll(), 1000, onError("events"));
+    TG.startPolling(pollJobs, 2000, onError("jobs"));
+  </script>
+</body>
+</html>

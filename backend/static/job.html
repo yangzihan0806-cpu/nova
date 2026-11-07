@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TartanGrid — Job</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site"></header>
+  <main>
+    <div class="panel-head">
+      <h1>Job <span class="mono" id="job-id">—</span> <span id="job-status"></span></h1>
+      <span class="muted mono small" id="job-params"></span>
+    </div>
+
+    <div class="job-layout">
+      <div class="stack">
+        <div class="canvas-wrap" id="canvas-wrap">
+          <canvas id="img" width="512" height="384"></canvas>
+          <canvas id="overlay" class="overlay" width="512" height="384"></canvas>
+        </div>
+        <div class="btn-row">
+          <label class="check"><input type="checkbox" id="color-by-worker"> Color by worker</label>
+          <span class="muted small">Outlined tiles are currently leased; dashed orange = reassigned after a failure.</span>
+          <button class="btn" id="download" style="margin-left:auto" disabled>Download PNG</button>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Job events</h2>
+            <label class="check"><input type="checkbox" id="hide-noisy" checked> Hide routine lease/done</label>
+          </div>
+          <div class="muted small" id="hidden-count"></div>
+          <ul class="events" id="events"></ul>
+        </section>
+      </div>
+
+      <div class="stack">
+        <section class="panel">
+          <h2>Progress</h2>
+          <div class="progress"><div id="bar"></div></div>
+          <div class="panel-head" style="margin:8px 0 0">
+            <span class="num" id="done-of">— / —</span>
+            <span class="num"><span class="muted">elapsed</span> <span id="elapsed">—</span></span>
+          </div>
+          <div class="counts">
+            <div><b id="n-pending">—</b><span>pending</span></div>
+            <div><b id="n-leased">—</b><span>leased</span></div>
+            <div><b id="n-done">—</b><span>done</span></div>
+            <div><b id="n-failed">—</b><span>failed</span></div>
+          </div>
+          <dl class="kv small" style="margin-top:12px">
+            <dt>Created</dt><dd id="t-created">—</dd>
+            <dt>Started</dt><dd id="t-started">—</dd>
+            <dt>Finished</dt><dd id="t-finished">—</dd>
+          </dl>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><h2>Workers on this job</h2><span class="muted small" id="legend-hint"></span></div>
+          <ul class="legend" id="legend"><li class="muted">No tiles finished yet.</li></ul>
+        </section>
+
+        <section class="panel">
+          <h2>Single-device baseline</h2>
+          <p class="muted small" style="margin-top:0">Renders the same tiles in one Web Worker in <em>this</em> browser and times it.
+            Results are not uploaded or drawn.</p>
+          <div class="btn-row"><button class="btn" id="baseline-btn">Run baseline</button></div>
+          <div class="progress" style="margin-top:10px" hidden id="baseline-prog"><div id="baseline-bar"></div></div>
+          <dl class="kv" style="margin-top:12px">
+            <dt>T<sub>single</sub> (this browser)</dt><dd id="t-single">—</dd>
+            <dt>T<sub>distributed</sub></dt><dd id="t-dist">—</dd>
+          </dl>
+          <div style="margin-top:10px"><span class="speedup" id="speedup"></span></div>
+          <p class="muted small" id="speedup-note" hidden>Measured; T<sub>distributed</sub> is end-to-end (includes network &amp; scheduling overhead).</p>
+          <div class="note err small" id="baseline-err" hidden></div>
+        </section>
+      </div>
+    </div>
+  </main>
+  <footer class="site"></footer>
+
+  <script src="common.js"></script>
+  <script>
+    "use strict";
+    TG.renderChrome("job");
+    const el = TG.el;
+    const jobId = TG.query("id");
+
+    const img = TG.$("#img"), overlay = TG.$("#overlay");
+    const ictx = img.getContext("2d"), octx = overlay.getContext("2d");
+    const colorToggle = TG.$("#color-by-worker");
+
+    const S = {
+      params: null, maxIter: 0, since: 0, status: null, elapsedMs: null,
+      tiles: new Map(),   // task idx -> {x, y, w, h, worker_id, attempts}
+      leased: [], terminal: false, initialized: false,
+    };
+
+    // ---------- canvas ----------
+    function initCanvas(p) {
+      img.width = overlay.width = p.width;
+      img.height = overlay.height = p.height;
+      ictx.fillStyle = "#07090c";
+      ictx.fillRect(0, 0, p.width, p.height);
+      S.initialized = true;
+    }
+
+    function drawTile(t) {
+      ictx.putImageData(TG.tileImageData(t.data, t.tile_w, t.tile_h, S.maxIter), t.tile_x, t.tile_y);
+      S.tiles.set(t.idx, { x: t.tile_x, y: t.tile_y, w: t.tile_w, h: t.tile_h, worker_id: t.worker_id, attempts: t.attempts || 1 });
+    }
+
+    function drawOverlay() {
+      octx.clearRect(0, 0, overlay.width, overlay.height);
+      const shown = overlay.getBoundingClientRect().width || overlay.width;
+      const s = overlay.width / shown; // canvas pixels per CSS pixel
+      if (colorToggle.checked) {
+        for (const t of S.tiles.values()) {
+          octx.fillStyle = TG.workerColorAlpha(t.worker_id, 0.3);
+          octx.fillRect(t.x, t.y, t.w, t.h);
+        }
+        octx.setLineDash([5 * s, 4 * s]);
+        octx.lineWidth = 2 * s;
+        octx.strokeStyle = "#f2994a";
+        for (const t of S.tiles.values()) {
+          if (t.attempts > 1) octx.strokeRect(t.x + 2 * s, t.y + 2 * s, t.w - 4 * s, t.h - 4 * s);
+        }
+        octx.setLineDash([]);
+      }
+      const lw = 2 * s;
+      octx.lineWidth = lw;
+      for (const l of S.leased) {
+        octx.strokeStyle = TG.workerColor(l.worker_id);
+        octx.strokeRect(l.tile_x + lw / 2, l.tile_y + lw / 2, l.tile_w - lw, l.tile_h - lw);
+      }
+    }
+    colorToggle.addEventListener("change", () => { drawOverlay(); TG.$("#legend-hint").textContent = colorToggle.checked ? "tile colors ↓" : ""; });
+    window.addEventListener("resize", drawOverlay);
+
+    // ---------- job polling ----------
+    function render(j) {
+      TG.$("#job-status").replaceChildren(TG.statusBadge(j.status));
+      const done = j.counts ? j.counts.done : 0;
+      const pct = j.task_count ? (100 * done) / j.task_count : 0;
+      TG.$("#bar").style.width = pct.toFixed(1) + "%";
+      TG.$("#done-of").textContent = `${done} / ${j.task_count} tiles (${pct.toFixed(0)}%)`;
+      TG.$("#elapsed").textContent = TG.fmtSeconds(j.elapsed_ms);
+      for (const k of ["pending", "leased", "done", "failed"]) TG.$("#n-" + k).textContent = j.counts ? j.counts[k] : "—";
+      TG.$("#t-created").textContent = TG.fmtTime(j.created_at);
+      TG.$("#t-started").textContent = TG.fmtTime(j.started_at);
+      TG.$("#t-finished").textContent = TG.fmtTime(j.finished_at);
+
+      const ws = (j.workers || []).slice().sort((a, b) => b.tiles_done - a.tiles_done);
+      TG.$("#legend").replaceChildren(...(ws.length ? ws.map((w) =>
+        el("li", null, TG.workerDot(w.worker_id), el("span", null, w.name), TG.typeBadge(w.worker_type),
+          el("span", { class: "num" }, w.tiles_done + " tiles"))) : [el("li", { class: "muted" }, "No tiles finished yet.")]));
+    }
+
+    // Distinct worker colors in registration order (same as the Dashboard).
+    let lastJob = null, colorsLoaded = false;
+    async function refreshColors() {
+      const s = await TG.api("/api/stats");
+      TG.assignWorkerColors(s.workers || []);
+      colorsLoaded = true;
+      if (lastJob) { render(lastJob); drawOverlay(); feed.render(); }
+    }
+
+    async function pollJob() {
+      if (!colorsLoaded) { try { await refreshColors(); } catch (_) { /* colors fall back to hash */ } }
+      const j = await TG.api(`/api/jobs/${encodeURIComponent(jobId)}?since=${S.since}`);
+      lastJob = j;
+      if (!S.initialized) {
+        S.params = j.params; S.maxIter = j.params.max_iter;
+        initCanvas(j.params);
+        const p = j.params;
+        TG.$("#job-params").textContent =
+          `${p.width}×${p.height} · tile ${p.tile_size} · max_iter ${p.max_iter} · x∈[${p.x_min}, ${p.x_max}] y∈[${p.y_min}, ${p.y_max}]`;
+      }
+      for (const t of j.tiles || []) drawTile(t);
+      if (j.next_since != null) S.since = j.next_since;
+      S.leased = j.leased || [];
+      S.status = j.status;
+      S.elapsedMs = j.elapsed_ms;
+      render(j);
+      drawOverlay();
+      TG.$("#download").disabled = S.tiles.size === 0;
+      updateSpeedup();
+      if (j.status === "completed" || j.status === "failed" || j.status === "cancelled") S.terminal = true;
+    }
+
+    const feed = new TG.EventFeed(TG.$("#events"), {
+      jobId, hideNoisyEl: TG.$("#hide-noisy"), countEl: TG.$("#hidden-count"), max: 100,
+    });
+
+    if (!jobId) {
+      TG.setBanner("No job id in the URL. Open a job from the Dashboard, e.g. job.html?id=job_xxxxxx");
+    } else {
+      TG.$("#job-id").textContent = jobId;
+      document.title = "TartanGrid — " + jobId;
+      const stops = [];
+      const stopAll = () => stops.forEach((f) => f());
+      stops.push(TG.startPolling(async () => {
+        await pollJob();
+        if (S.terminal) {
+          await feed.poll();          // pick up the job_completed event
+          stopAll();
+        }
+      }, 1000, (e) => {
+        if (e && e.status === 404) { TG.setBanner("Job " + jobId + " not found."); stopAll(); return; }
+        TG.setBanner(e ? "Cannot load job — retrying… (" + e.message + ")" : null);
+      }));
+      stops.push(TG.startPolling(async () => { if (!S.terminal) await feed.poll(); }, 1000));
+      // New workers may join mid-job: refresh the color assignment every few seconds.
+      stops.push(TG.startPolling(async () => { if (colorsLoaded) await refreshColors(); }, 4000));
+    }
+
+    // ---------- download ----------
+    TG.$("#download").addEventListener("click", () => {
+      img.toBlob((blob) => {
+        if (!blob) return;
+        const a = el("a", { href: URL.createObjectURL(blob), download: `tartangrid_${jobId || "job"}.png` });
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      }, "image/png");
+    });
+
+    // ---------- single-device baseline ----------
+    // Real mode loads C's mandelbrot_kernel.js; mock mode uses a capped stand-in kernel.
+    const MOCK_KERNEL = `function computeTile(inp){const cap=Math.min(inp.max_iter,300);const out=new Int32Array(inp.tile_w*inp.tile_h);
+      const dx=(inp.x_max-inp.x_min)/inp.image_width,dy=(inp.y_max-inp.y_min)/inp.image_height;
+      for(let j=0;j<inp.tile_h;j++){const ci=inp.y_max-(inp.tile_y+j+0.5)*dy;for(let i=0;i<inp.tile_w;i++){const cr=inp.x_min+(inp.tile_x+i+0.5)*dx;
+      let zr=0,zi=0,n=0;while(n<cap&&zr*zr+zi*zi<=4){const t=zr*zr-zi*zi+cr;zi=2*zr*zi+ci;zr=t;n++;}out[j*inp.tile_w+i]=n;}}return out;}`;
+    const BASELINE_SRC = `
+      self.onmessage = (e) => {
+        const inputs = e.data.inputs;
+        const t0 = performance.now();
+        for (let i = 0; i < inputs.length; i++) {
+          computeTile(inputs[i]);
+          if (i % 2 === 1 || i === inputs.length - 1)
+            self.postMessage({ type: "progress", done: i + 1, total: inputs.length, ms: performance.now() - t0 });
+        }
+        self.postMessage({ type: "done", ms: performance.now() - t0 });
+      };`;
+    let baseline = null, tSingle = null;
+    const bBtn = TG.$("#baseline-btn");
+
+    function stopBaseline() {
+      if (baseline) { baseline.terminate(); baseline = null; }
+      bBtn.textContent = "Run baseline";
+    }
+    bBtn.addEventListener("click", () => {
+      if (baseline) { stopBaseline(); TG.$("#t-single").textContent = "cancelled"; return; }
+      if (!S.params) return;
+      const head = TG.MOCK ? MOCK_KERNEL : `importScripts(${JSON.stringify(location.origin + "/mandelbrot_kernel.js")});`;
+      const url = URL.createObjectURL(new Blob([head + BASELINE_SRC], { type: "text/javascript" }));
+      baseline = new Worker(url);
+      URL.revokeObjectURL(url);
+      TG.$("#baseline-err").hidden = true;
+      TG.$("#baseline-prog").hidden = false;
+      TG.$("#baseline-bar").style.width = "0%";
+      TG.$("#t-single").textContent = "running…";
+      bBtn.textContent = "Cancel baseline";
+      baseline.onmessage = (e) => {
+        const m = e.data;
+        if (m.type === "progress") {
+          TG.$("#baseline-bar").style.width = ((100 * m.done) / m.total).toFixed(1) + "%";
+          TG.$("#t-single").textContent = `running… ${m.done}/${m.total} tiles, ${TG.fmtSeconds(m.ms)}`;
+        } else if (m.type === "done") {
+          tSingle = m.ms;
+          stopBaseline();
+          TG.$("#t-single").textContent = TG.fmtSeconds(tSingle) + (TG.MOCK ? " (mock kernel)" : "");
+          updateSpeedup();
+        }
+      };
+      baseline.onerror = (e) => {
+        e.preventDefault();
+        stopBaseline();
+        TG.$("#t-single").textContent = "—";
+        const err = TG.$("#baseline-err");
+        err.textContent = "Baseline failed: " + (e.message || "could not load mandelbrot_kernel.js") +
+          "\n(mandelbrot_kernel.js is provided by the workers code — is it deployed yet?)";
+        err.hidden = false;
+      };
+      baseline.postMessage({ inputs: TG.splitInputs(S.params) });
+    });
+
+    function updateSpeedup() {
+      const done = S.status === "completed";
+      TG.$("#t-dist").textContent = done ? TG.fmtSeconds(S.elapsedMs) : (S.status ? "job not finished yet" : "—");
+      const sp = TG.$("#speedup");
+      if (done && tSingle != null && S.elapsedMs > 0) {
+        const x = tSingle / S.elapsedMs;
+        sp.textContent = "Speedup " + x.toFixed(2) + "×";
+        sp.className = "speedup" + (x < 1 ? " slow" : "");
+        TG.$("#speedup-note").hidden = false;
+      } else {
+        sp.textContent = "";
+        TG.$("#speedup-note").hidden = true;
+      }
+    }
+  </script>
+</body>
+</html>
