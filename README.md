@@ -77,7 +77,7 @@ A 需要提供 `backend/main.py`、`schemas.py`、调度器、数据库和完整
 
 A/B/C/D 已全部合入 `main`，以下命令可直接使用。smoke test 和 native worker 额外需要 `requests`；native 机器请同时安装 `numba`（没有它会退回 numpy，速度约慢 2–3 倍）。根目录现有的 `requirements.txt` 是聊天原型依赖，不替代后端依赖。
 
-另外，现有 `.gitignore` 尚无 `*.db`。请由 A 在创建数据库或暂存运行产物前补上该项；`.env` 已忽略。不要提交数据库、令牌或运行日志中的凭据。
+`.gitignore` 已忽略 `*.db` 和 `.env`。不要提交数据库、令牌或运行日志中的凭据。
 
 以下命令从仓库根目录开始，要求 Python ≥ 3.10。已经创建 `.venv` 时跳过第一行：
 
