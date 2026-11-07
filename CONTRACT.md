@@ -1,4 +1,6 @@
-# TartanGrid 工程契约（CONTRACT v1.0）
+# TartanGrid 工程契约（CONTRACT v1.1）
+
+> v1.1（2026-11-07）：AI Planner 在没有 `ANTHROPIC_API_KEY` 时改用主办方发的 OpenRouter key（§1、§3）；明确"用完次数的 pending task 在下次 reap 时判 failed"（§7）。其余不变。
 
 > 四人共享、**冻结**。任何人（包括你的 agent）不得单方面修改本契约或别人的文件。
 > 发现契约有问题：在群里提出，全员同意后由 D 升版本号（v1.1…）并通知所有人。
@@ -25,7 +27,7 @@
 | 浏览器 Worker | Dedicated Web Worker（`static/worker.js`） |
 | Native Worker | Python + requests + numba（可选；缺失时 fallback 到 numpy） |
 | 公网访问 | `cloudflared tunnel --url http://localhost:8000`，所有设备用它给出的 `https://*.trycloudflare.com` |
-| AI Planner | Anthropic API（`ANTHROPIC_API_KEY`），不可用时返回 503，前端降级到表单 |
+| AI Planner | 优先 Anthropic API（`ANTHROPIC_API_KEY`）；没有则用 OpenRouter（`OPENROUTER_API_KEY`，从仓库根目录 `.env` 读取）。都不可用时返回 503，前端降级到表单 |
 
 启动：
 
@@ -102,7 +104,9 @@ nova/
 | `TG_MAX_ACTIVE_JOBS` | `2` | 同时处于 queued/running 的 job 上限 |
 | `TG_SPOT_CHECKS` | `4` | 每个结果服务端随机重算的像素数 |
 | `TG_PLANNER_MODEL` | `claude-haiku-5-5` | Planner 使用的模型 |
-| `ANTHROPIC_API_KEY` | — | 缺失则 Planner 返回 503 |
+| `ANTHROPIC_API_KEY` | — | 有则 Planner 用 Anthropic |
+| `OPENROUTER_API_KEY` | — | 没有 Anthropic key 时 Planner 用 OpenRouter（可写在仓库根目录 `.env`） |
+| `OPENROUTER_MODEL` | `openai/gpt-4o` | OpenRouter 模型名 |
 
 ---
 
@@ -433,6 +437,7 @@ RETURNING id, job_id, input_json, attempts;
   1. `status='leased' AND lease_expires < now` 的 task：`attempts < MAX` → pending，记 `lease_expired`；否则 → failed，记 `task_failed`。两种情况都清空 `worker_id` 和 `lease_token`。
   2. 有 task failed 的 job → 状态变为 `failed`，写入 `finished_at`，记 `job_failed`。
   3. 新近 offline 的 worker（`offline_notified=0`、未 disconnect、心跳超时）→ `offline_notified=1`，记 `worker_offline`。
+- 用完次数：`status='pending' AND attempts >= MAX` 的 task（例如第 3 次 lease 时 worker disconnect）在下次 reap 时判 `failed`，记 `task_failed`，不会被第 4 次 lease。
 - 迟到结果：lease 已过期但还**没被 reap**，token 仍然匹配 → 接受（结果是有效的）。已被 reap 或已重新 lease → 409。
 - 调度顺序：FIFO（先按 job 创建时间，再按 idx）。公平调度是 P2。
 

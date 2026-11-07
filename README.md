@@ -13,7 +13,7 @@ TartanGrid 的目标是把贡献者主动授权的浏览器和个人电脑连接
 | `scripts/smoke_test.py` | 独立 HTTP 假 worker 的契约检查 | A 的真实 API、C 的 `compute_tile` / `split_inputs` |
 | `backend/requirements.txt` | 仅 D 允许追加的 `anthropic` | **不是完整后端依赖表**；与 A 的依赖合并时仅追加这一行 |
 | `README.md` / `DEMO.md` | 操作手册、阶段验收、3 分钟剧本 | 现场网络、测量、彩排和视频均需真实执行 |
-| `CONTRACT.md` | 保留上传的 v1.0 原文 | 不单方面修改共享接口或版本 |
+| `CONTRACT.md` | v1.1（Planner 支持 OpenRouter；明确用完次数的 task 判 failed） | 不单方面修改共享接口或版本 |
 
 测试替身只用于验证 D 代码的分支和请求流程；它通过测试，不等于真实后端 smoke test 或真实设备验收通过。性能表只记录实际测量，不从架构文档复制参考数字。
 
@@ -171,7 +171,7 @@ python scripts/smoke_test.py --server http://localhost:8000
 
 ## AI Planner 验证
 
-Planner 默认使用 **Anthropic**；原聊天原型的 OpenRouter key 不能直接用于它。`TG_PLANNER_MODEL` 默认 `claude-haiku-5-5`，须以账户实际支持的模型为准。Planner 从进程环境读取 `ANTHROPIC_API_KEY`，不会自动加载原型的 `.env`。在本机私密环境或运行平台的 secret 设置中注入，不要把 key 写进命令截图或提交到 Git。
+Planner 优先使用 **Anthropic**（`ANTHROPIC_API_KEY`，模型 `TG_PLANNER_MODEL`，默认 `claude-haiku-5-5`）；没有 Anthropic key 时改用主办方发的 **OpenRouter** key：直接复用仓库根目录 `.env` 里的 `OPENROUTER_API_KEY` 和 `OPENROUTER_MODEL`（默认 `openai/gpt-4o`），Planner 会自动读取这个 `.env`。在本机私密环境或运行平台的 secret 设置中注入，不要把 key 写进命令截图或提交到 Git。
 
 A 需在 `backend/main.py` 挂载 D 的 router（契约 §6.13）：
 

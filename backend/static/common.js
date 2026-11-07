@@ -236,15 +236,15 @@
   TG.renderChrome = function (active) {
     const header = TG.$("header.site");
     if (header) {
-      header.replaceChildren(
+      header.replaceChildren(...[
         TG.el("a", { class: "brand", href: TG.link("/") },
           TG.el("span", { class: "logo" }), "TartanGrid"),
         TG.el("nav", null,
           navLink("/", "Dashboard", active === "dashboard"),
           navLink("/new.html", "New Job", active === "new"),
           navLink("/contribute.html", "Contribute", active === "contribute")),
-        TG.MOCK ? TG.el("span", { class: "mock-badge", title: "Simulated data — ?mock=1" }, "MOCK DATA") : null
-      );
+        TG.MOCK ? TG.el("span", { class: "mock-badge", title: "Simulated data — ?mock=1" }, "MOCK DATA") : null,
+      ].filter(Boolean)); // replaceChildren(null) would insert the text "null"
     }
     const footer = TG.$("footer.site");
     if (footer) {
