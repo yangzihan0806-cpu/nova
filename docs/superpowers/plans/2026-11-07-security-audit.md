@@ -11,7 +11,7 @@
 - User's approved scope is audit only. No requester authentication, new quota policies, GPU integration or planner redesign.
 - Preserve existing public request/response bodies and worker behavior. Add X-Request-ID on job submission responses.
 - Keep production .env, database, tunnel and Windows processes untouched; no merge or deployment.
-- Latest main baseline d4a5051; branch feature/security-audit; existing cloud checkout is isolated from the field deployment.
+- Initial main baseline d4a5051; integrated team cleanup/English documentation through 3c6d22d; branch feature/security-audit; existing cloud checkout is isolated from the field deployment.
 - Record only fixed redacted details. Reader credential is server-configured, held only in current-page memory, never transmitted to unrelated endpoints.
 
 ## Review Focus

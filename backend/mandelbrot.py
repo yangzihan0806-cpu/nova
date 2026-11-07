@@ -10,7 +10,7 @@ except ImportError:
 BACKEND = "numba" if njit is not None else "numpy"
 
 
-def compute_pixel(px, py, p):          # px, py 是全图像素坐标；py = 0 是最上面一行
+def compute_pixel(px, py, p):          # px, py are full-image pixel coordinates; py = 0 is the top row
     dx = (p["x_max"] - p["x_min"]) / p["image_width"]
     dy = (p["y_max"] - p["y_min"]) / p["image_height"]
     cr = p["x_min"] + (px + 0.5) * dx
