@@ -1,102 +1,102 @@
-# TartanGrid · 现场演示脚本（约 3 分钟）
+# TartanGrid · Live demo script (about 3 minutes)
 
-所有数字都来自 README 的 [Measured results](README.md#measured-results)。现场只讲真实发生的结果，不报预设或估算的数字。
+Every number comes from [Measured results](README.md#measured-results) in the README. On stage we only report results that actually happened, never preset or estimated numbers.
 
-## 设备与分工
+## Devices and roles
 
-| 设备 | 运行什么 | 谁操作 |
+| Device | What runs on it | Who operates it |
 |---|---|---|
-| 服务器笔记本 | `tg_server.bat` + `tg_tunnel.bat` + `tg_native.bat`（native，4 slots） | Harry |
-| 投屏电脑（**不贡献算力**） | Dashboard / New Job / Job 页 | 主讲旁的操作者 |
-| 队友设备 1 | 浏览器 `/contribute.html`，填 Owner，保持前台 | 队友 |
-| 队友设备 2 | 浏览器 `/contribute.html`，填 Owner，保持前台；**由它来演示断线** | 队友 |
+| Server laptop | `tg_server.bat` + `tg_tunnel.bat` + `tg_native.bat` (native, 4 slots) | Harry |
+| Projector computer (**does not contribute compute**) | Dashboard / New Job / Job page | Operator next to the presenter |
+| Teammate device 1 | Browser on `/contribute.html`, Owner filled in, kept in the foreground | Teammate |
+| Teammate device 2 | Browser on `/contribute.html`, Owner filled in, kept in the foreground; **this one demonstrates the disconnect** | Teammate |
 
-规则：
-- 提交任务和看图都用投屏电脑。贡献页所在的浏览器**不要切标签页**，切走会自动暂停。
-- 贡献设备插着电，屏幕不要锁。
-- native 窗口不要最小化。
+Rules:
+- Submit jobs and watch the image on the projector computer. In the browser running the contribute page, **don't switch tabs**: switching away pauses it automatically.
+- Keep contributing devices plugged in, with the screen unlocked.
+- Don't minimize the native window.
 
-## 开演前 5 分钟检查
+## Checks 5 minutes before going on
 
-- [ ] 服务器、隧道、native 三个窗口都开着；Dashboard 显示 **2 个 BROWSER + 1 个 NATIVE**，状态都是 online。
-- [ ] 跑一次 **Quick** 热身，确认能出图。
-- [ ] 当前没有其他任务在跑（Dashboard 的 Active jobs 为 0）。
-- [ ] 备用视频能在投屏电脑上离线播放。
-- [ ] 屏幕上没有 `.env`、key 或终端里的 token。
+- [ ] The server, tunnel and native windows are all open; the Dashboard shows **2 BROWSER + 1 NATIVE**, all online.
+- [ ] Run one **Quick** job as a warm-up and confirm the image renders.
+- [ ] No other job is running (Active jobs on the Dashboard is 0).
+- [ ] The backup video plays offline on the projector computer.
+- [ ] No `.env`, key or terminal token is visible on screen.
 
-## 0:00–0:20 · 问题
+## 0:00–0:20 · The problem
 
-主讲：
-> "校园里的电脑大部分时间都闲着。TartanGrid 让任何人打开一个网页就能把空闲 CPU 贡献出来，一起算一个可以拆开的大任务；设备中途离开，任务也照样完成。"
+Presenter:
+> "Most campus computers sit idle most of the time. With TartanGrid, anyone can open a web page to contribute their idle CPU to one big job that can be split into pieces, and the job still finishes when a device leaves partway through."
 
-画面：Dashboard。
+Screen: Dashboard.
 
-## 0:20–0:45 · 贡献算力
+## 0:20–0:45 · Contributing compute
 
-画面：Dashboard 的节点表。指出两个 BROWSER 和一个 NATIVE。
+Screen: the node table on the Dashboard. Point out the two BROWSER nodes and the NATIVE node.
 
-> "这两台是队友设备上的浏览器，打开网页点 Start 就加入了，不用安装任何东西。这一台跑的是 Python native worker，用 numba 和 4 个核心。它们都通过同一个协议领取任务。贡献者随时可以 Pause 或退出。"
+> "These two are browsers on teammates' devices. They opened a web page and clicked Start; nothing to install. This one runs the Python native worker, using numba on 4 cores. They all lease work through the same protocol, and a contributor can Pause or leave at any time."
 
-## 0:45–1:15 · AI 规划并提交任务
+## 0:45–1:15 · AI planning and submitting a job
 
-画面：New Job。在 AI Planner 里输入：
+Screen: New Job. In the AI Planner, type:
 
 > Render a detailed Mandelbrot image and keep browser workers light.
 
-点 Generate config，表单被自动填好后：
+Click Generate config. Once the form is filled in:
 
-> "AI 只负责把一句话翻译成参数，不会生成代码，也不会自动提交。所有参数都要经过服务器校验。"
+> "The AI only translates a sentence into parameters. It never generates code and never submits on its own, and every parameter is validated by the server."
 
-然后**选 Demo 预设**（AI 生成的参数可能耗时不同，演示用 Demo，时长已经实测过），点 Submit，进入 Job 页，**马上勾选 Color by worker**。
+Then **choose the Demo preset** (AI-generated parameters may take a different amount of time; the Demo timing has been measured), click Submit, go to the Job page, and **immediately tick Color by worker**.
 
-AI 不可用（503）时：直接说"AI 不可用时表单照样能用"，选 Demo 提交。
+If the AI is unavailable (503): just say "when the AI is unavailable, the form still works", choose Demo and submit.
 
-## 1:15–1:50 · 断线恢复（核心）
+## 1:15–1:50 · Recovering from a disconnect (the core)
 
-提交后**约第 10 秒**（进度约 1/3），指示队友设备 2 **直接关掉贡献页标签**。
+About **10 seconds** after submitting (roughly 1/3 done), signal teammate device 2 to **close the contribute tab outright**.
 
-> "现在我们把一台设备直接关掉。它手上正在算的那一块不会丢：每一块都有 10 秒的租约，过期没交回，服务器就交给别的设备。迟到或重复的结果会被拒绝，所以不会重复计数。"
+> "Now we shut one device off. The tile it was computing isn't lost: every tile has a 10-second lease, and if it isn't returned before the lease expires, the server hands it to another device. Late or duplicate results are rejected, so nothing is counted twice."
 
-画面：Dashboard 或 Job 页的事件流里会出现 `lease_expired` → 橙色 **REASSIGNED**；Job 页上那一块会换成别的设备的颜色，带橙色虚线框。等它出现再讲，不要抢在前面。
+Screen: in the event stream on the Dashboard or Job page, `lease_expired` → an orange **REASSIGNED** appears; on the Job page that tile switches to another device's color with an orange dashed outline. Wait until it appears before you describe it; don't get ahead of it.
 
-## 1:50–2:20 · 结果与真实性能
+## 1:50–2:20 · Results and real performance
 
-画面：完成的图、Workers on this job。
+Screen: the finished image and Workers on this job.
 
-> "整张图 192 块，零失败。我们实测：三台设备一起算是 25.8 秒；同样的任务用一个浏览器线程算要 97.2 秒，快了 3.76 倍；就算和服务器笔记本自己用 4 个核算的 43.2 秒比，也快了 1.67 倍。这些都是端到端时间，包括网络和调度。"
+> "The whole image is 192 tiles with zero failures. We measured it: three devices together take 25.8 seconds. The same job on one browser thread takes 97.2 seconds, so that's 3.76× faster. Even against the server laptop alone on 4 cores at 43.2 seconds, it's 1.67× faster. These are all end-to-end times, including network and scheduling."
 
-如果当场这次的耗时不同，就读当场显示的数字，并说明上面这些是之前的实测记录。
+If this run's time is different, read the number shown on screen and say that the numbers above are from earlier measured runs.
 
-> "native 拿的块最多，因为它最快。这正是拉取式调度的好处：快的设备自动多干，不需要手动分配。"
+> "The native worker took the most tiles because it's the fastest. That's the benefit of pull-based scheduling: faster devices automatically do more, with no manual assignment."
 
-## 2:20–2:40 · 贡献记录
+## 2:20–2:40 · Contribution records
 
-画面：Contributions 页。
+Screen: Contributions page.
 
-> "每台设备做了多少经过验证的计算都有记录，单位是百万次迭代。只有通过服务器抽查的结果才计分，算得慢不会多得分。可以导出 CSV，之后用来分配奖励。只记积分，不涉及钱。"
+> "We record how much verified computation each device did, in millions of iterations. Only results that pass the server's spot checks earn credit, and computing slowly doesn't earn more. It exports to CSV so we can use it to distribute rewards later. It's credit only; no money is involved."
 
-## 2:40–3:00 · 安全与愿景
+## 2:40–3:00 · Safety and vision
 
-> "只运行审核过的模板，没人能把代码塞到别人的设备上。现在演示的是分形渲染；同一套调度、容错和验证可以接其他能拆分的任务，比如蒙特卡洛模拟和参数搜索。将来在管理员授权下，也可以通过 Slurm 接入实验室集群。"
+> "Only reviewed templates run, so nobody can push code onto someone else's device. Today we're showing fractal rendering; the same scheduling, fault tolerance and verification can host other splittable workloads, like Monte Carlo simulations and parameter sweeps. In the future, with administrator approval, it could also reach lab clusters through Slurm."
 
-## 出问题时
+## When things go wrong
 
-| 情况 | 怎么做 |
+| Situation | What to do |
 |---|---|
-| 网络或隧道断了 | 播放备用视频，并说明这是之前的录像 |
-| AI 返回 503 | 用表单选 Demo，说"AI 不可用时流程照常" |
-| 关标签后迟迟没有出现 REASSIGNED | 等到 lease 过期（10 秒）；如果任务已经算完，就讲第 4 次运行的实测记录（31.8 秒，1 块重新分配，0 失败） |
-| 浏览器节点几乎分不到块 | 检查贡献页是否在前台；照实说 native 更快 |
-| 页面显示的耗时和 README 不同 | 读当场数字，不改口径 |
+| The network or tunnel drops | Play the backup video and say it is an earlier recording |
+| The AI returns 503 | Use the form, choose Demo, and say "without the AI, the flow works the same" |
+| No REASSIGNED appears after closing the tab | Wait for the lease to expire (10 seconds); if the job has already finished, describe the measured record from run 4 (31.8 seconds, 1 tile reassigned, 0 failures) |
+| The browser nodes get almost no tiles | Check that the contribute pages are in the foreground; say honestly that native is faster |
+| The time on screen differs from the README | Read the live number; don't change how it is reported |
 
-## 评委常见问题
+## Common judge questions
 
-**和 BOINC 有什么不同？** 我们没有发明志愿计算。我们做的是低门槛的校园版本：浏览器打开即可加入，浏览器和 native 用同一协议，节点掉线自动恢复，并按验证过的工作量记贡献。
+**How is this different from BOINC?** We didn't invent volunteer computing. We built a low-barrier campus version: you join by opening a browser, browsers and native workers share one protocol, dropped nodes are recovered automatically, and contributions are recorded by verified work.
 
-**能用学校的 GPU 吗？** 现在不能，也没有接入。将来只会在资源所有者授权、走现有调度和配额的前提下接入。
+**Can it use the university's GPUs?** Not now, and it isn't connected. In the future it would only connect with the resource owner's permission, through the existing scheduler and quotas.
 
-**怎么防作弊？** 每个结果服务器都会随机重算 8 个像素，对不上就拒收并重算。这是概率性检查，不是绝对保证；将来可以加冗余计算。
+**How do you prevent cheating?** For every result the server randomly recomputes 8 pixels; if they don't match, the result is rejected and recomputed. It's a probabilistic check, not an absolute guarantee; redundant computation could be added later.
 
-**只能算分形吗？** 现在只开放了这一个经过审核的模板，因为安全（不能运行任意代码）而且画面直观。平台层是通用的，加新任务只需要接入一个审核过的计算模块。
+**Can it only compute fractals?** Right now only this one reviewed template is enabled, for safety (no arbitrary code) and because it's visual. The platform layer is general; adding a new workload only requires plugging in one reviewed compute module.
 
-**加速多少？** 3 台设备 25.8 秒，比单个浏览器线程快 3.76 倍，比服务器笔记本单独跑快 1.67 倍，都是端到端实测。早期有两次比单机还慢，原因是 Windows 上 localhost 的配置问题，README 里照实记录了。
+**How much speedup?** 25.8 seconds on 3 devices: 3.76× faster than one browser thread and 1.67× faster than the server laptop alone, all measured end to end. Two early runs were slower than a single machine because of a localhost configuration issue on Windows; the README records them as they happened.
