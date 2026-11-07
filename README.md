@@ -16,10 +16,10 @@ The demo job renders a Mandelbrot fractal: every tile is independent, so you can
 | Browser identity tests (Node) | v1.2 cloud validation: **8 / 8 pass** |
 | Contribution end-to-end check | Passed with real Web Workers in 2 Chromium contexts and native Python processes: 56 accepted tiles, reload/restart identity persistence, JSON/CSV agreement and responsive UI; one cloud host, not a physical-device benchmark |
 | Cloud end-to-end run (2 browser contexts + 1 native worker, with a crash and closed tab) | Previous integration passed on one cloud machine; simulated contexts do not establish physical-device coverage |
-| Cross-device network (`cloudflared` tunnel, phone + Windows laptop) | Works; second physical browser laptop still pending |
+| Cross-device network (`cloudflared` tunnel) | **Works** from a phone and from a second laptop's browser (Browser-1658), alongside the Windows server laptop |
 | AI Planner with a real API key | **Passed on the live demo server** with the organizers' OpenRouter key: a normal prompt (~3 s) and 3 hostile prompts (`run this python code`, `use all CMU GPUs`, `width 100000`) all returned valid Mandelbrot parameters |
 | Performance on our own devices | First numbers in [Measured results](#measured-results) |
-| Field failure recovery, `demo max_iter=20000` | **Passed**: 31.8 s, native 181 tiles + Browser-1658 11, one lease expiry and reassignment, 0 failed (run 4) |
+| Field failure recovery, `demo max_iter=20000` | **Passed**: 31.8 s, native 181 tiles + a second laptop's browser (Browser-1658) 11, one lease expiry and reassignment, 0 failed (run 4) |
 | One-device reference for `max_iter=20000` | Laptop alone: 43.2 s (run 5). Adding one browser device: 31.8 s and 30.4 s, about **1.4×** (runs 4 and 6). A single-thread browser baseline is not measured |
 | Contribution tracking on the live server | **Deployed and verified**: migration kept all 2076 earlier tiles; new device IDs and owners recorded; reload merges into one row; CSV export works; devices without an owner are hidden by default (data kept) |
 
@@ -232,9 +232,9 @@ $$\text{Speedup} = \frac{T_{\text{single}}}{T_{\text{distributed}}}$$
 | 1 | demo, `max_iter` 8000 | phone 150, laptop native ×2 slots 42 | 57.3 s (laptop browser) | 98.7 s | 0.58× |
 | 2 | demo, `max_iter` 8000 | phone 128, laptop native ×2 copies 64 | 44.3 s (laptop browser) | 71.3 s | 0.62× |
 | 3 | demo, `max_iter` 8000 | laptop native ×4 slots 170, phone 22 | 37.5 s (laptop browser) | **15.2 s** | **2.46×** |
-| 4 | demo, `max_iter` 20000 (tile 128) | laptop native 181, Browser-1658 11; **1 tile reassigned** after a tab was closed | 43.2 s (run 5) | **31.8 s** | **1.36×** |
+| 4 | demo, `max_iter` 20000 (tile 128) | laptop native 181, second laptop's browser (Browser-1658) 11; **1 tile reassigned** after a tab was closed | 43.2 s (run 5) | **31.8 s** | **1.36×** |
 | 5 | same image and `max_iter` 20000, tile 64 (768 tiles) | laptop native only (4 slots) 768 | — (this *is* the one-device reference) | 43.2 s | — |
-| 6 | demo, `max_iter` 20000 (tile 128) | laptop native 168, Browser-1658 24 | 43.2 s (run 5) | **30.4 s** | **1.42×** |
+| 6 | demo, `max_iter` 20000 (tile 128) | laptop native 168, second laptop's browser (Browser-1658) 24 | 43.2 s (run 5) | **30.4 s** | **1.42×** |
 
 Runs 1–2 were slow because of a Windows bug in our setup, not the scheduler: the native worker connected to `localhost`, and each request waited about 2 s for an IPv6 attempt to fail (each tile needs 2 requests). Switching to `127.0.0.1` fixed it (run 3). Run 2 also accidentally had two native copies on the same laptop.
 
@@ -244,7 +244,7 @@ After run 3 the `demo` preset was raised to `max_iter` 20000 so the job lasts lo
 
 - **Run 4 (fault drill):** a contributor's browser tab was closed mid-job. Task 1118 emitted `lease_expired` and the native worker took it on attempt 2. The job still completed in 31.8 s with **one reassignment and zero failed tiles**.
 - **Run 5 (one-device reference):** the same 2048×1536 image at `max_iter` 20000, computed by the laptop alone (native, 4 slots) through the scheduler: 43.2 s. It used 64-px tiles (768 tiles) instead of 128-px (192 tiles). The total pixels and iterations are the same, but there is a little more per-tile overhead, so the speedups for runs 4 and 6 are approximate.
-- **Runs 4 and 6:** adding a single browser device (Browser-1658) to the same laptop cut the time from 43.2 s to about 31 s.
+- **Runs 4 and 6:** adding one browser on a second laptop (Browser-1658) to the server laptop cut the time from 43.2 s to about 31 s.
 
 Not measured yet: a single-thread browser baseline at `max_iter` 20000 (*Run baseline* on the job page), and a run with two browser devices plus the native laptop at the same time.
 
@@ -256,7 +256,7 @@ Not measured yet: a single-thread browser baseline at `max_iter` 20000 (*Run bas
 |---|---|
 | Another device opens the server over the venue Wi-Fi (LAN address) | not tested (not needed) |
 | Another device opens the `cloudflared` HTTPS address | **works** (one phone browser joined; server and native ran on Harry's Windows laptop) |
-| Second physical laptop joins through the tunnel | **Pending**; target is two browser devices plus one native worker simultaneously |
+| Second physical laptop joins through the tunnel | **Works**: a second laptop's browser (Browser-1658) computed tiles in runs 4 and 6. Still to do: two browser devices plus the native worker at the same time |
 | Fallback: all devices on one phone hotspot | not tested |
 | Path chosen for the demo | `cloudflared` tunnel |
 
