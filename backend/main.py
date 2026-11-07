@@ -2,6 +2,8 @@
 
 Use one application process: the MVP lock/connection are process-local.
 """
+import csv
+import io
 import json
 import math
 import time
@@ -13,10 +15,11 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
 
 import db
 import scheduler
-from schemas import CompleteReq, EmptyReq, FailReq, JobCreate, PlannerReq, RegisterReq
+from schemas import CompleteReq, ContributionWindow, EmptyReq, FailReq, JobCreate, PlannerReq, RegisterReq
 
 BASE_DIR = Path(__file__).resolve().parent
 QUICK = {'id': 'quick', 'label': 'Quick test — full set (small)',
@@ -130,6 +133,53 @@ def stats():
 @app.get('/api/events')
 def events(since: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=500), job_id: str | None = None):
     return scheduler.events(since, limit, job_id)
+
+
+def contribution_window(since: str | None = None, until: str | None = None):
+    try:
+        return ContributionWindow(since=since, until=until)
+    except ValidationError as exc:
+        errors = exc.errors()
+        for error in errors:
+            error['loc'] = ('query', *error['loc'])
+        raise RequestValidationError(errors) from exc
+
+
+def contribution_data(window):
+    return scheduler.contributions(
+        window.since.timestamp() if window.since is not None else None,
+        window.until.timestamp() if window.until is not None else None,
+        time.time(),
+    )
+
+
+@app.get('/api/contributions')
+def contributions(window: ContributionWindow = Depends(contribution_window)):
+    return contribution_data(window)
+
+
+def csv_label(value):
+    # CSV quoting alone does not prevent spreadsheets from executing formulas.
+    if value and (value.lstrip().startswith(('=', '+', '-', '@'))
+                  or value.startswith(('\t', '\r', '\n'))):
+        return "'" + value
+    return value
+
+
+@app.get('/api/contributions.csv')
+def contributions_csv(window: ContributionWindow = Depends(contribution_window)):
+    data = contribution_data(window)
+    fields = ('device_id', 'display_name', 'owner', 'worker_types', 'workers', 'tiles_done',
+              'verified_miter', 'share', 'compute_ms', 'online_s', 'first_seen', 'last_seen')
+    output = io.StringIO(newline='')
+    writer = csv.DictWriter(output, fieldnames=fields)
+    writer.writeheader()
+    for device in data['devices']:
+        writer.writerow(device | {'worker_types': ';'.join(device['worker_types']),
+                                  'display_name': csv_label(device['display_name']),
+                                  'owner': csv_label(device['owner'])})
+    return Response(content=output.getvalue(), media_type='text/csv',
+                    headers={'Content-Disposition': 'attachment; filename="tartangrid_contributions.csv"'})
 
 
 @app.get('/api/presets')

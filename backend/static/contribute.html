@@ -29,6 +29,14 @@
           <div><label for="slots">Slots</label>
             <select id="slots"><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
         </div>
+        <div style="margin-top:12px">
+          <label for="owner">Owner (for rewards) · optional</label>
+          <input type="text" id="owner" maxlength="40" autocomplete="off" aria-describedby="owner-help">
+          <p class="muted small" id="owner-help">Choose an identifier the team can use to associate your contributions with you (for example, an Andrew ID).
+            It appears on the Contributions page and in CSV exports. Leave it blank to contribute without an owner label.</p>
+        </div>
+        <p class="muted small">This browser saves a random device ID to group your contributions across visits. It uses no hardware fingerprint.
+          Browser and native contributions have separate IDs; you can give them the same owner label.</p>
         <label class="check" style="margin-top:12px"><input type="checkbox" id="auto-pause" checked> Pause when this tab is hidden</label>
         <div class="note err small" id="form-err" style="margin-top:12px" hidden></div>
 
@@ -70,6 +78,9 @@
     try { saved = localStorage.getItem("tg_node_name"); } catch (_) {}
     nameInput.value = saved || "Browser-" + String(Math.floor(1000 + Math.random() * 9000));
     nameInput.addEventListener("change", () => { try { localStorage.setItem("tg_node_name", nameInput.value.trim()); } catch (_) {} });
+    const ownerInput = TG.$("#owner");
+    try { ownerInput.value = localStorage.getItem("tg_owner") || ""; } catch (_) {}
+    ownerInput.addEventListener("change", () => { try { localStorage.setItem("tg_owner", ownerInput.value.trim()); } catch (_) {} });
 
     // ---------- load C's scripts (mock mode uses TG.MockContributor instead) ----------
     let Impl = null;
@@ -109,7 +120,7 @@
       TG.$("#pause").disabled = !can || state !== "running";
       TG.$("#resume").disabled = !can || state !== "paused";
       TG.$("#stop").disabled = !can || !["running", "paused", "connecting", "error"].includes(state) || !c;
-      nameInput.disabled = TG.$("#slots").disabled = !["idle", "stopped", "error"].includes(state);
+      nameInput.disabled = ownerInput.disabled = TG.$("#slots").disabled = !["idle", "stopped", "error"].includes(state);
     }
 
     function onStatus(s) {
@@ -142,10 +153,13 @@
       if (!Impl) return;
       const name = nameInput.value.trim();
       if (name.length < 1 || name.length > 40) throw new Error("Node name must be 1–40 characters.");
+      const owner = ownerInput.value.trim();
+      if (Array.from(owner).length > 40) throw new Error("Owner must be at most 40 characters.");
       try { localStorage.setItem("tg_node_name", name); } catch (_) {}
+      try { localStorage.setItem("tg_owner", owner); } catch (_) {}
       TG.$("#form-err").hidden = true;
       manualPause = autoPaused = false;
-      c = new Impl({ name, slots: parseInt(TG.$("#slots").value, 10) });   // fresh instance every Start
+      c = new Impl({ name, slots: parseInt(TG.$("#slots").value, 10), owner: owner || null });   // fresh instance every Start
       c.on("status", onStatus);
       c.on("log", log);
       c.on("task_done", (e) => log(`task #${e.taskId} done in ${(e.runtimeMs / 1000).toFixed(2)}s`));

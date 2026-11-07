@@ -91,7 +91,7 @@ def create_job(params, now):
     return dict(job_id=job_id, status='queued', task_count=count)
 
 
-def register_worker(name, worker_type, slots, has_gpu, task_types, client_info, now):
+def register_worker(name, worker_type, slots, has_gpu, task_types, client_info, now, device_id=None, owner=None):
     token = secrets.token_urlsafe(24)
     with db.tx() as conn:
         while True:
@@ -99,10 +99,15 @@ def register_worker(name, worker_type, slots, has_gpu, task_types, client_info, 
             if conn.execute('SELECT 1 FROM workers WHERE id=?', (worker_id,)).fetchone() is None:
                 break
         allowed = ['mandelbrot_v1'] if 'mandelbrot_v1' in task_types else []
+        device_id = device_id or 'wkr:' + worker_id
+        owner = (owner.strip() or None) if owner is not None else None
         conn.execute('''INSERT INTO workers(id,name,worker_type,token,slots,has_gpu,task_types,
-                       client_info,last_heartbeat,registered_at) VALUES (?,?,?,?,?,?,?,?,?,?)''',
-                     (worker_id, name, worker_type, token, slots, int(has_gpu), json.dumps(allowed), client_info, now, now))
-        log_event(conn, now, 'worker_joined', f'Worker {name} joined', worker_id=worker_id)
+                       client_info,last_heartbeat,registered_at,device_id,owner) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+                     (worker_id, name, worker_type, token, slots, int(has_gpu), json.dumps(allowed), client_info, now, now, device_id, owner))
+        owner_text = f', owner {owner}' if owner is not None else ''
+        log_event(conn, now, 'worker_joined',
+                  f"{name} joined ({worker_type}, {slots} {'slot' if slots == 1 else 'slots'}{owner_text})",
+                  worker_id=worker_id)
     return dict(worker_id=worker_id, token=token, heartbeat_interval_s=db.HEARTBEAT_S, lease_ttl_s=db.LEASE_TTL_S)
 
 
@@ -226,9 +231,9 @@ def complete(task_id, worker_id, lease_token, result, runtime_ms, now):
             _fail_jobs(conn, now)
         else:
             changed = conn.execute('''UPDATE tasks SET status='done',result_json=?,done_by=?,runtime_ms=?,done_at=?,
-                                      worker_id=NULL,lease_token=NULL,lease_expires=NULL
+                                      credit_iters=?,worker_id=NULL,lease_token=NULL,lease_expires=NULL
                                       WHERE id=? AND status='leased' AND lease_token=?''',
-                                   (json.dumps(result), worker_id, runtime_ms, now, task_id, lease_token)).rowcount
+                                   (json.dumps(result), worker_id, runtime_ms, now, sum(result), task_id, lease_token)).rowcount
             if not changed:
                 raise HTTPException(409, 'stale_lease')
             seq = log_event(conn, now, 'task_done', f'Task {task_id} completed',
@@ -383,3 +388,57 @@ def events(since, limit, job_id):
                      worker_id=e['worker_id'], worker_name=e['worker_name'], message=e['message']) for e in rows]
         # CONTRACT-NOTE: preserve the caller's cursor on empty/filtered pages.
         return dict(events=data, next_since=max([since] + [e['id'] for e in rows]))
+
+
+def contributions(since, until, now):
+    """Lifetime device metadata with task-time-filtered accepted contributions.
+
+    Aggregate tasks per worker before grouping sessions into devices; otherwise
+    joining every tile would multiply session counts and online durations.
+    """
+    with db.tx() as conn:
+        rows = conn.execute('''
+            WITH task_credit AS (
+                SELECT done_by, count(*) AS tiles_done,
+                       sum(COALESCE(credit_iters, legacy_credit_iters(result_json))) AS iters,
+                       integer_sum(COALESCE(runtime_ms, 0)) AS compute_ms
+                FROM tasks
+                WHERE status='done'
+                  AND (? IS NULL OR done_at >= ?) AND (? IS NULL OR done_at <= ?)
+                GROUP BY done_by
+            ), sessions AS (
+                SELECT w.*, COALESCE(device_id, 'wkr:' || id) AS device_key,
+                       row_number() OVER (
+                           PARTITION BY COALESCE(device_id, 'wkr:' || id)
+                           ORDER BY registered_at DESC, rowid DESC
+                       ) AS recency
+                FROM workers w
+            ), devices AS (
+                SELECT device_key, group_concat(DISTINCT worker_type) AS worker_types,
+                       count(*) AS workers, sum(COALESCE(t.tiles_done, 0)) AS tiles_done,
+                       sum(COALESCE(t.iters, 0)) AS iters,
+                       integer_sum(COALESCE(t.compute_ms, 0)) AS compute_ms,
+                       sum(max(0, last_heartbeat - registered_at)) AS online_s,
+                       min(registered_at) AS first_seen, max(last_heartbeat) AS last_seen
+                FROM sessions s LEFT JOIN task_credit t ON t.done_by=s.id
+                GROUP BY device_key
+            )
+            SELECT d.*, s.name AS display_name, s.owner
+            FROM devices d JOIN sessions s ON s.device_key=d.device_key AND s.recency=1
+            ORDER BY d.iters DESC, d.device_key
+        ''', (since, since, until, until)).fetchall()
+    total_iters = sum(row['iters'] for row in rows)
+    devices = []
+    for row in rows:
+        devices.append(dict(
+            device_id=row['device_key'], display_name=row['display_name'], owner=row['owner'],
+            worker_types=sorted(row['worker_types'].split(',')), workers=row['workers'],
+            tiles_done=row['tiles_done'], verified_miter=row['iters'] / 1_000_000,
+            share=round(row['iters'] / total_iters, 4) if total_iters else 0.0,
+            compute_ms=int(row['compute_ms']), online_s=float(row['online_s']),
+            first_seen=iso(row['first_seen']), last_seen=iso(row['last_seen']),
+        ))
+    return dict(generated_at=iso(now), unit='Miter',
+                basis='sum of per-pixel iterations in accepted, spot-checked results',
+                totals=dict(devices=len(devices), tiles_done=sum(d['tiles_done'] for d in devices),
+                            verified_miter=total_iters / 1_000_000), devices=devices)

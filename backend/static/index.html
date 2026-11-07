@@ -22,24 +22,33 @@
       <div class="stack">
         <section class="panel">
           <div class="panel-head"><h2>Nodes</h2><span class="muted small" id="server-time"></span></div>
+          <div class="table-scroll" tabindex="0" role="region" aria-label="Nodes table">
           <table>
             <thead>
               <tr><th>Node</th><th>Type</th><th>Status</th><th class="num">Slots</th><th class="num">Tasks done</th><th>Heartbeat</th><th>Current task</th></tr>
             </thead>
             <tbody id="nodes"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
           </table>
+          </div>
         </section>
 
         <section class="panel">
           <div class="panel-head"><h2>Recent jobs</h2><a id="new-job-link" href="new.html">+ New job</a></div>
+          <div class="table-scroll" tabindex="0" role="region" aria-label="Recent jobs table">
           <table>
             <thead><tr><th>Job</th><th>Status</th><th>Progress</th><th class="num">Tiles</th><th>Size</th><th>Created</th></tr></thead>
             <tbody id="jobs"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
           </table>
+          </div>
         </section>
       </div>
 
       <div class="stack">
+        <section class="panel">
+          <div class="panel-head"><h2>Top contributors</h2><a id="contributions-link" href="contributions.html">View all</a></div>
+          <p class="muted small">All-time verified Miter · accepted, spot-checked work</p>
+          <ol class="top-contributors" id="top-contributors"><li class="muted">Loading…</li></ol>
+        </section>
         <section class="panel">
           <div class="panel-head">
             <h2>Live events</h2>
@@ -68,6 +77,7 @@
     "use strict";
     TG.renderChrome("dashboard");
     TG.$("#new-job-link").href = TG.link("/new.html");
+    TG.$("#contributions-link").href = TG.link("/contributions.html");
     const el = TG.el;
 
     // One error slot per poller so a success in one doesn't hide a failure in another.
@@ -133,6 +143,18 @@
         [el("tr", null, el("td", { colspan: 6, class: "empty" }, "No jobs yet."))]));
     }
 
+    async function pollContributions() {
+      const data = await TG.api("/api/contributions");
+      const devices = TG.rankContributions(data.devices).slice(0, 3);
+      TG.$("#top-contributors").replaceChildren(...(devices.length ? devices.map((d, i) =>
+        el("li", { "data-device-id": d.device_id },
+          el("span", { class: "muted num" }, i + 1), TG.workerDot(d.device_id),
+          el("span", { class: "contributor-name" }, el("strong", null, d.display_name),
+            d.owner ? el("span", { class: "muted small" }, d.owner) : null),
+          el("span", { class: "num contributor-credit" }, TG.fmtMiter(d.verified_miter), el("span", { class: "muted small" }, " Miter")))) :
+        [el("li", { class: "muted" }, "No devices yet. Start contributing to join the list.")]));
+    }
+
     // ---------- events ----------
     const feed = new TG.EventFeed(TG.$("#events"), {
       hideNoisyEl: TG.$("#hide-noisy"), countEl: TG.$("#hidden-count"), max: 100,
@@ -141,6 +163,7 @@
     TG.startPolling(pollStats, 1000, onError("stats"));
     TG.startPolling(() => feed.poll(), 1000, onError("events"));
     TG.startPolling(pollJobs, 2000, onError("jobs"));
+    TG.startPolling(pollContributions, 5000, onError("contributions"));
   </script>
 </body>
 </html>

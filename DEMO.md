@@ -1,6 +1,6 @@
-# TartanGrid · 3 分钟演示脚本
+# TartanGrid · 3 分 15 秒演示脚本
 
-这是按架构文档 §13 准备的**待彩排脚本**。目前 D 集成包没有证明 A/B/C 的真实服务和设备闭环；下列页面操作、真实模型调用、故障恢复、性能测量和备用视频必须在现场执行后才能作为成果展示。实测数字填入 [README.md](README.md) 的 “Measured results”，未测时不宣称加速倍数。
+这是按架构文档 §13 准备的**待彩排脚本**。团队已报告 Windows native + 手机浏览器通过 tunnel 完成 `demo max_iter=20000`：31.8 秒，native 181 块、手机 11 块，1 次过期重派，0 failed。第二台真实浏览器笔记本与同参数 T_single **仍未测量**；云端测试上下文不能代替真机验收。下列完整彩排、真实模型现场检查与备用视频仍须逐项记录。实测数字填入 [README.md](README.md) 的 “Measured results”，未测时不宣称加速倍数。
 
 ## 角色与设备
 
@@ -16,14 +16,15 @@
 
 ## 演示前验收
 
-- [ ] A/B/C 合入后，在一次性测试数据库上跑 `python scripts/smoke_test.py --server http://localhost:8000`，全部 PASS；保存无凭据的结果摘要。
-- [ ] 在第二台真实设备测试 Network setup，选择已验证的 tunnel / LAN / 热点路径。
+- [ ] 本次功能合入后，在自有一次性测试数据库上跑 `python scripts/smoke_test.py --server http://127.0.0.1:8001`，13 项全部 PASS；保存无凭据的结果摘要。不要连接现场公网服务运行 smoke。
+- [ ] 在第二台真实浏览器笔记本打开现有 tunnel 的 `/contribute.html`，点 Start，保持前台；Dashboard 同时显示 2 个 BROWSER 和 1 个 NATIVE。现有 phone + Windows 网络已通，这一步仍待执行。
 - [ ] 已停止 smoke 服务并清除测试环境变量；演示使用 `TG_RESET_DB=0`、默认 lease TTL `10` 秒，确认未遗留 `3` 秒 TTL。
 - [ ] 两个浏览器节点和一个 native 节点真实上线，名称对应物理设备；没有测试 worker 冒充设备。
 - [ ] `demo` 在当前设备组合经过实测调优：最慢设备单 tile 目标 `0.3–2` 秒、全 job 目标 `30–60` 秒。目标不等于当前测量结果。
-- [ ] 同参数单机基线已在登台前测量；重型基线不占用 3 分钟现场时段。记录硬件、backend、预热及网络开销口径。
-- [ ] 有 key 时实测 Planner；另在无 key 状态验证 `503` 后手动表单仍可提交任务。没有 Anthropic key 时，Planner 会自动使用根目录 `.env` 里的 `OPENROUTER_API_KEY`。
-- [ ] 完整走三遍故障流程：真实节点持有 lease → 退出 / 崩溃 → `lease_expired` → 其他节点完成 → 图像完整。
+- [ ] 在没有其他任务运行时，对 `max_iter=20000` 的 demo job 点 **Run baseline**，记录 T_single、设备和浏览器；未测前保持 README 第 4 行 baseline / speedup 为 Pending。基线不占用台上时段。
+- [ ] 有 key 时，在 `/new.html` 实测正常 Planner 输入；再逐条测试 `run this python code: print(1)`、`use all CMU GPUs`、`width 100000`，必须只填入合法 Mandelbrot 参数或返回 422/503。另在自有测试服务无 key 状态验证 503 后手动表单仍可提交。不要在现场覆盖 `.env` 做无 key 测试。
+- [ ] 完整走三遍故障流程：真实节点持有 lease → 在进度约 1/3、提交后约第 10 秒关闭预定浏览器贡献标签 → `lease_expired` → 其他节点完成 → 图像完整。以实际进度和持有 lease 为准。
+- [ ] 打开 Contributions，核对 accepted tiles / verified Miter；刷新页面后浏览器 ID 保持，CSV 与所选范围一致。旧 `wkr:…` 历史记录仍显示。
 - [ ] 录下一次成功运行；确认本机视频可以离线播放、文件存在且无 key、worker token 或内部 IP。没有视频时不能声称已备妥。
 - [ ] 投屏关闭终端密钥、`.env`、注册响应与私人窗口；Dashboard 数字全部来自真实 API。
 
@@ -35,13 +36,23 @@ python workers/native_worker.py --server https://YOUR-TUNNEL.trycloudflare.com -
 
 `N` 是待替换的整数，不要原样复制。提前确认退出时确有任务持有 lease；节点在空闲时退出不会展示分片重派。
 
+## 部署到现场服务器（仅 Harry 操作）
+
+1. 等贡献功能 PR 合入 `main`、自动化检查通过，并确认现场没有正在运行的任务。功能尚未通过时继续演示现有稳定版。
+2. 从 `main` 获取更新文件，复制到 `C:\Users\yangz\Desktop\nova-starter`。这是复制目录，不要假设能在这里 `git pull`。**保留 `.env` 和 `backend/tartangrid.db`**；不要启用 `TG_RESET_DB=1`，不要清空旧表。
+3. **仅重启服务器窗口**：Ctrl+C，再双击 `tg_server.bat`。**保持 tunnel 窗口运行**，避免公网地址改变。现有 worker 可继续用兼容协议连接；刷新浏览器贡献页加载新脚本，以持久 device_id 重新注册。
+4. 打开 `/api/contributions`，确认旧任务以 `wkr:…` 身份计入；跑一次 quick，确认新浏览器身份的已验证工作增加。重复刷新 / 注册仍应合并到同一 device_id 行。
+5. 已运行的 native 进程不会自动加载磁盘上的新 Python 代码。等上述部署检查完成且没有任务在跑，Harry 可另行 Ctrl+C 退出并重新运行 `tg_native.bat` 以启用新持久 ID / 可选 OWNER；隧道保持运行。保留历史 `wkr:…` 记录，不人工合并成新身份。
+
+部署与真机操作只能由 Harry 执行。本脚本和云端测试不表示已操作现场机器。
+
 ## 0:00–0:25 · 问题
 
 **D 主讲，B 展示 Dashboard。**
 
 “个人电脑会有短暂空闲。TartanGrid 探索让设备拥有者主动贡献算力，让一个可拆分的计算任务在多台设备上完成。我们的重点是低门槛加入，以及设备退出后任务仍能继续。”
 
-若现场闭环尚未验收，开场明确改为：“今天展示的是 D 的集成和 AI 参数规划部分；分布式闭环仍待团队联调。”后续只演示实际可用功能，不使用预设节点数量代替真实状态。
+若第二台浏览器尚未加入，按实际状态说：“当前由一台手机浏览器和一台 Windows native 设备共同完成计算；第二台浏览器节点仍待验证。”后续只演示实际可用功能，不使用预设节点数量代替真实状态。
 
 ## 0:25–0:55 · 贡献算力
 
@@ -61,11 +72,13 @@ Planner 成功时说：“AI 将意图转换成白名单模板的参数；服务
 
 如果 `503` 或输出无效，不停留调试：“AI 目前不可用，我们用同一张表单选择已测过的 demo 参数。”B 选择彩排定稿的 `demo` 并提交，打开 Job 页，确认 Browser 和 Native 均实际完成过分片。
 
-根据当前设备速度安排提交时刻，确保在 1:35 左右仍有任务。不能为配合剧本虚构进度或人为展示不存在的节点。
+根据当前设备速度安排提交时刻；断线动作对齐进度约 1/3、提交后约 10 秒，必要时提前进入下一段。不能为配合剧本虚构进度或人为展示不存在的节点。
 
 ## 1:35–2:15 · 故障恢复
 
 **B 开启 “Color by worker”。D 确认预定浏览器节点正在持有任务，指示操作者关闭其贡献标签页；C 保持 native 在线。**
+
+上面的绝对时间是讲解时段参考；已测 demo 约 31.8 秒，因此要在提交后约第 10 秒执行关标签动作，不能等到 job 已完成才触发。
 
 “每个任务领取都有服务器发放的 lease。如果这个节点退出且没有交回结果，租约过期后，其他节点可以领取同一分片继续计算。旧 lease 的迟到结果不能重复计数。”
 
@@ -95,6 +108,14 @@ Planner 成功时说：“AI 将意图转换成白名单模板的参数；服务
 
 > TartanGrid connects voluntarily shared computers to run parallel jobs. Browser and native workers use one protocol, and leases let the scheduler reassign work when a device leaves. Today we demonstrate measured computation on our own devices; campus GPU and HPC integration remains planned and requires authorization.
 
+## 3:00–3:15 · 设备贡献记录
+
+**B 打开 `/contributions.html`，展示当前真实排名与 Download CSV。**
+
+“这里记录每台设备身份完成了多少已验证工作，以百万次迭代计。只计算被接受的结果，重复或被拒提交不加分。可选 owner 便于团队对应记录，CSV 可以导出。只记积分，不涉及钱；最终奖励由团队决定。”
+
+若同一电脑出现浏览器 / native 两行，说明它们各自保存随机 ID；不能称为两台物理设备。抽样验证是概率性的，不承诺绝对防作弊。仅在本次部署已经验收后展示真实页；mock 模式必须明确标注为模拟数据。
+
 ## 降级路径
 
 | 情况 | 当场动作 | 表述与准备 |
@@ -121,7 +142,11 @@ Planner 成功时说：“AI 将意图转换成白名单模板的参数；服务
 正常 Disconnect 可以立即释放任务；突然消失时，通过 lease 过期和 lazy reap 重新入队。token 与任务状态约束防止迟到或重复结果被重复计数。
 
 **怎么保证结果正确？**  
-结果必须满足长度、整数和范围要求；服务端随机重算像素检查。抽样不保证发现所有恶意错误，这是 MVP 的限制，未来可增加冗余执行或更强验证。
+结果必须满足长度、整数和范围要求；服务端默认随机重算 8 个像素检查。积分为接受结果的 `sum(result)`，CPU 时长不参与记功。抽样不保证发现所有恶意错误，这是 MVP 的限制，未来可增加冗余执行或更强验证。
+
+**贡献度会发钱吗，必须填真实身份吗？**
+
+当前只记积分，没有金额、代币或兑换功能，最终奖励由团队决定。ID 随机生成，无硬件指纹；owner 选填，只用于人工对应贡献记录，公开页面和 CSV 都会显示，请填写愿意公开的标签。它不是身份认证。
 
 **AI 是否必要，会不会执行用户代码？**  
 AI 提供可选的参数建议，输出仍由 `JobParams` 校验；不生成或执行任意代码，不自动创建 job。不可用时手动表单保留核心流程。

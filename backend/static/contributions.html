@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TartanGrid — Contributions</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site"></header>
+  <main>
+    <div class="panel-head contributions-heading">
+      <div>
+        <h1>Device contributions</h1>
+        <p class="muted">Accepted work, grouped by device. One Miter is one million verified iterations.</p>
+      </div>
+      <a class="btn" id="download-csv" href="/api/contributions.csv" aria-disabled="true" download="tartangrid_contributions.csv">Download CSV</a>
+    </div>
+
+    <section class="panel" aria-label="Contribution filters">
+      <form id="range-form" class="contribution-filters">
+        <div>
+          <label for="range">Time range</label>
+          <select id="range">
+            <option value="all">All time</option>
+            <option value="hour">Last hour</option>
+            <option value="custom">Custom range</option>
+          </select>
+        </div>
+        <div id="custom-range" class="custom-range" hidden>
+          <div><label for="since">From (your local time)</label><input type="datetime-local" id="since" step="1"></div>
+          <div><label for="until">Until (your local time)</label><input type="datetime-local" id="until" step="1"></div>
+          <button class="btn" type="submit" id="apply-range">Apply range</button>
+        </div>
+      </form>
+      <p class="muted small">The range includes results accepted at either boundary. Leave one custom boundary blank for an open range.
+        Device registrations and online time cover all time.</p>
+      <div class="note err small" id="filter-error" role="alert" hidden></div>
+    </section>
+
+    <section class="cards contribution-totals" aria-label="Contribution totals">
+      <div class="card"><div class="label">Devices</div><div class="value num" id="total-devices">—</div></div>
+      <div class="card"><div class="label">Accepted tiles</div><div class="value num" id="total-tiles">—</div></div>
+      <div class="card accent"><div class="label">Verified Miter</div><div class="value num" id="total-miter">—</div></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Contribution ranking</h2>
+        <span class="muted small" id="refresh-status" role="status" aria-live="polite">Loading…</span>
+      </div>
+      <table class="contributions-table">
+        <caption class="sr-only">Devices ranked by verified iterations, including offline devices and devices with zero credit.</caption>
+        <thead><tr><th scope="col">Rank</th><th scope="col">Device</th><th scope="col">Owner</th><th scope="col">Type</th><th scope="col" class="num">Tiles</th><th scope="col" class="num">Verified Miter</th><th scope="col">Share</th><th scope="col">Online time</th></tr></thead>
+        <tbody id="contribution-rows"><tr><td colspan="8" class="empty">Loading contributions…</td></tr></tbody>
+      </table>
+      <p class="muted small">Offline and disconnected devices remain listed. Online time and compute time are reference values; they do not determine credit.</p>
+    </section>
+
+    <p class="note small" id="credit-note">Credit = verified iterations from accepted, spot-checked results. Points only, no money. Final rewards are decided by the team.</p>
+    <p class="muted small">Spot checks are probabilistic and do not guarantee that cheating is detected. Device IDs are random, without hardware fingerprints.
+      Owner labels are optional and are visible here and in CSV exports. Browser and native workers keep separate device IDs.</p>
+  </main>
+  <footer class="site"></footer>
+  <script src="common.js"></script>
+  <script>
+    "use strict";
+    TG.renderChrome("contributions");
+    const el = TG.el;
+    const range = TG.$("#range"), since = TG.$("#since"), until = TG.$("#until");
+    const csv = TG.$("#download-csv"), filterError = TG.$("#filter-error"), status = TG.$("#refresh-status");
+    let applied = { mode: "all" }, sequence = 0, inFlight = false, dirty = false, loaded = false;
+
+    function setDownloadEnabled(enabled) {
+      csv.setAttribute("aria-disabled", String(!enabled));
+      csv.tabIndex = enabled ? 0 : -1;
+    }
+    function localInputValue(date) {
+      return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
+    }
+    function markDirty() {
+      dirty = true;
+      setDownloadEnabled(false);
+      status.textContent = "Range changed. Apply it to refresh the table and CSV.";
+    }
+    function queryFor(filter) {
+      const params = new URLSearchParams();
+      if (filter.mode === "hour") params.set("since", new Date(Date.now() - 3600000).toISOString());
+      if (filter.mode === "custom") {
+        if (filter.since) params.set("since", filter.since);
+        if (filter.until) params.set("until", filter.until);
+      }
+      return params.size ? "?" + params.toString() : "";
+    }
+    function applyFilters() {
+      const next = { mode: range.value };
+      filterError.hidden = true;
+      if (next.mode === "custom") {
+        try {
+          if (!since.value && !until.value) throw new Error("Enter at least one boundary, or choose All time.");
+          if (since.value) next.since = new Date(since.value).toISOString();
+          if (until.value) next.until = new Date(until.value).toISOString();
+          if (next.since && next.until && next.since > next.until) throw new Error("From must be before or equal to Until.");
+        } catch (error) {
+          markDirty();
+          filterError.textContent = error instanceof RangeError ? "Enter valid dates for the custom range." : error.message;
+          filterError.hidden = false;
+          return;
+        }
+      }
+      applied = next;
+      dirty = false;
+      refresh();
+    }
+    range.addEventListener("change", () => {
+      const custom = range.value === "custom";
+      TG.$("#custom-range").hidden = !custom;
+      if (custom && !since.value && !until.value) {
+        since.value = localInputValue(new Date(Date.now() - 3600000));
+        until.value = localInputValue(new Date());
+      }
+      applyFilters();
+    });
+    since.addEventListener("input", markDirty);
+    until.addEventListener("input", markDirty);
+    TG.$("#range-form").addEventListener("submit", (event) => { event.preventDefault(); applyFilters(); });
+
+    function render(data) {
+      TG.$("#total-devices").textContent = TG.fmtInt(data.totals.devices);
+      TG.$("#total-tiles").textContent = TG.fmtInt(data.totals.tiles_done);
+      TG.$("#total-miter").textContent = TG.fmtMiter(data.totals.verified_miter);
+      const devices = TG.rankContributions(data.devices);
+      const cell = (label, value, className) => el("td", { "data-label": label, class: className }, value);
+      const rows = devices.map((d, index) => {
+        const share = Math.max(0, Math.min(1, Number(d.share) || 0));
+        const percent = (share * 100).toFixed(2) + "%";
+        return el("tr", { "data-device-id": d.device_id },
+          cell("Rank", index + 1, "num contribution-rank"),
+          cell("Device", el("div", { class: "device-label" },
+            el("div", null, TG.workerDot(d.device_id), " ", el("strong", null, d.display_name)),
+            el("div", { class: "muted small mono" }, d.device_id),
+            el("div", { class: "muted small" }, TG.fmtInt(d.workers) + " registration" + (d.workers === 1 ? "" : "s"))), "device-cell"),
+          cell("Owner", d.owner || "—", "owner-cell"),
+          cell("Type", el("div", { class: "type-tags" }, (d.worker_types || []).map(TG.typeBadge))),
+          cell("Tiles", TG.fmtInt(d.tiles_done), "num"),
+          cell("Verified Miter", TG.fmtMiter(d.verified_miter), "num verified-credit"),
+          cell("Share", el("div", { class: "share-cell" }, el("span", { class: "num" }, percent),
+            el("div", { class: "progress", role: "progressbar", "aria-label": "Share of verified iterations", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": (share * 100).toFixed(2) },
+              el("div", { style: { width: (share * 100) + "%", background: TG.workerColor(d.device_id) } })))),
+          cell("Online time", el("div", null, el("span", { class: "num" }, TG.fmtDuration(d.online_s)),
+            el("div", { class: "muted small" }, "Compute " + TG.fmtSeconds(d.compute_ms)))));
+      });
+      TG.$("#contribution-rows").replaceChildren(...(rows.length ? rows :
+        [el("tr", null, el("td", { colspan: 8, class: "empty" }, "No devices registered yet. Open Contribute to join."))]));
+    }
+    async function refresh() {
+      const request = ++sequence;
+      const query = queryFor(applied);
+      inFlight = true;
+      setDownloadEnabled(false);
+      if (!dirty) status.textContent = "Refreshing selected range…";
+      try {
+        const data = await TG.api("/api/contributions" + query);
+        if (request !== sequence) return;
+        render(data);
+        loaded = true;
+        csv.href = "/api/contributions.csv" + query;
+        setDownloadEnabled(!dirty);
+        if (!dirty) status.textContent = "Updated " + new Date(data.generated_at).toLocaleString() + " · refreshes every 5 seconds";
+        TG.setBanner(null);
+      } catch (error) {
+        if (request !== sequence) return;
+        status.textContent = loaded ? "Refresh failed. The table shows the last successful response." : "Contributions could not be loaded.";
+        TG.setBanner("Could not load contributions — retrying… (" + error.message + ")");
+      } finally {
+        if (request === sequence) inFlight = false;
+      }
+    }
+    csv.addEventListener("click", async (event) => {
+      if (csv.getAttribute("aria-disabled") === "true") { event.preventDefault(); return; }
+      if (!TG.MOCK) return;
+      event.preventDefault();
+      // Mock exports use the same filtered API simulation instead of a live backend.
+      const path = csv.getAttribute("href");
+      try {
+        const content = await TG.api(path);
+        const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" }));
+        const download = el("a", { href: url, download: "tartangrid_contributions.csv" });
+        document.body.appendChild(download);
+        download.click();
+        download.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (error) { TG.setBanner("CSV download failed: " + error.message); }
+    });
+    TG.startPolling(() => inFlight || dirty ? Promise.resolve() : refresh(), 5000);
+  </script>
+</body>
+</html>

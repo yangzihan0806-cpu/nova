@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Contract v1.0 HTTP smoke test; run against a disposable, otherwise idle DB.
+"""Contract v1.2 HTTP smoke test; run against a disposable, otherwise idle DB.
 
-Two HTTP clients simulate workers; neither imports the native worker. The real
+Three HTTP clients simulate workers; none imports the native worker. The real
 backend/mandelbrot.py supplies computation. No server reset or DB access occurs.
 """
 
@@ -22,18 +22,19 @@ QUICK = {
     "x_min": -2.2, "x_max": 1.0, "y_min": -1.2, "y_max": 1.2,
 }
 STAGES = [
-    "health, presets, disposable DB precondition",
-    "invalid job parameters return 422",
-    "register W1/W2; invalid worker tokens return 401",
-    "compute reference tiles; submit quick job (48 tasks)",
-    "W1 leases a task and stops without completing it",
-    "W2 completes quick job and recovers W1's expired lease",
-    "W1's stale lease returns 409",
-    "duplicate complete returns 409; exactly 48 tasks counted",
-    "wrong-length and zero-filled results return 422",
-    "pause prevents leases; resume permits a lease",
-    "disconnect immediately releases the held task",
-    "events include expiry, rejection, departure and completion",
+    ("stage1", "health, presets, disposable DB precondition"),
+    ("stage2", "invalid job parameters return 422"),
+    ("stage3", "register W1/W2/W3 across two device IDs; invalid tokens return 401"),
+    ("stage4", "compute reference tiles; submit quick job (48 tasks)"),
+    ("stage5", "W1 completes one tile, then abandons its next lease"),
+    ("stage6", "W2/W3 complete quick job and recover W1's expired lease"),
+    ("stage7", "W1's stale lease returns 409"),
+    ("stage8", "duplicate complete returns 409; exactly 48 tasks counted"),
+    ("stage9", "wrong-length and zero-filled results return 422"),
+    ("stage_contributions", "two device rows have exactly 48 accepted tiles and reference iteration credit"),
+    ("stage10", "pause prevents leases; resume permits a lease"),
+    ("stage11", "disconnect immediately releases the held task"),
+    ("stage12", "events include expiry, rejection, departure and completion"),
 ]
 
 
@@ -85,6 +86,9 @@ class Smoke:
         self.cache = {}
         self.event_cursor = 0
         self.completed_ids = set()
+        self.worker_devices = {}
+        self.worker_tiles = {}
+        self.device_credit = {}
         self.recovered = False
 
     def remaining(self):
@@ -120,13 +124,13 @@ class Smoke:
         return self.request("POST", f"/api/workers/{worker['worker_id']}/{action}",
                             expected, worker, {}, token)
 
-    def heartbeat(self):
-        require(self.worker_action(self.w2, "heartbeat").get("ok") is True,
-                "W2 heartbeat was not acknowledged")
+    def heartbeat(self, worker=None):
+        require(self.worker_action(worker or self.w2, "heartbeat").get("ok") is True,
+                "worker heartbeat was not acknowledged")
 
     def lease(self, worker):
-        if worker is getattr(self, "w2", None):
-            self.heartbeat()
+        if worker is getattr(self, "w2", None) or worker is getattr(self, "w3", None):
+            self.heartbeat(worker)
         task = self.worker_action(worker, "lease", (200, 204))
         if task is not None:
             require(task.get("task_type") == "mandelbrot_v1", "unexpected leased task_type")
@@ -197,7 +201,7 @@ class Smoke:
         require(isinstance(presets, list), "presets response must be an array")
         quicks = [p for p in presets if isinstance(p, dict) and p.get("id") == "quick"]
         require(len(quicks) == 1 and quicks[0].get("params") == QUICK,
-                "quick preset must match CONTRACT v1.0 (48 tiles)")
+                "quick preset must match CONTRACT v1.2 (48 tiles)")
         self.quick = quicks[0]["params"]
         stats = self.request("GET", "/api/stats")
         require(stats.get("workers") == [] and stats.get("totals", {}).get("active_jobs") == 0
@@ -212,18 +216,28 @@ class Smoke:
         self.request("POST", "/api/jobs", 422, body={"task_type": "python_exec", "params": self.quick})
 
     def stage3(self):
-        for name in ("Smoke-W1", "Smoke-W2"):
+        registrations = [
+            ("Smoke-W1", "native", "dev_smokeshared01", "smoke-shared"),
+            ("Smoke-W2", "browser", "dev_smokeshared01", "smoke-shared"),
+            ("Smoke-W3", "native", "dev_smokeother001", "smoke-other"),
+        ]
+        for name, worker_type, device_id, owner in registrations:
             worker = self.request("POST", "/api/workers/register", body={
-                "name": name, "worker_type": "native", "slots": 1, "has_gpu": False,
+                "name": name, "worker_type": worker_type, "slots": 1, "has_gpu": False,
                 "task_types": ["mandelbrot_v1"], "client_info": "independent HTTP contract smoke test",
+                "device_id": device_id, "owner": owner,
             })
             require(bool(worker.get("worker_id")) and bool(worker.get("token")), "malformed worker registration")
             self.workers.append(worker)
-        self.w1, self.w2 = self.workers
-        require(self.w1["worker_id"] != self.w2["worker_id"], "workers must have distinct IDs")
+            self.worker_devices[worker["worker_id"]] = device_id
+            self.worker_tiles[worker["worker_id"]] = 0
+            self.device_credit.setdefault(device_id, {"tiles": 0, "iters": 0, "runtime_ms": 0})
+        self.w1, self.w2, self.w3 = self.workers
+        require(len({w["worker_id"] for w in self.workers}) == 3, "workers must have distinct IDs")
         self.ttl = float(self.w2["lease_ttl_s"])
         require(math.isfinite(self.ttl) and self.ttl > 0, "invalid server lease TTL")
-        require(float(self.w1["lease_ttl_s"]) == self.ttl, "workers received inconsistent TTLs")
+        require(all(float(w["lease_ttl_s"]) == self.ttl for w in self.workers),
+                "workers received inconsistent TTLs")
         if self.args.lease_ttl is not None:
             require(self.ttl == self.args.lease_ttl, "registration TTL differs from --lease-ttl")
         require(self.ttl + 2 < self.remaining(), "overall timeout is too short for the registered lease TTL")
@@ -240,6 +254,9 @@ class Smoke:
         self.job_id = job["job_id"]
 
     def stage5(self):
+        first = self.lease(self.w1)
+        require(first is not None, "W1 did not receive its initial quick task")
+        self.accept_quick(self.w1, first)
         self.held = self.lease(self.w1)
         require(self.held is not None and self.held["job_id"] == self.job_id, "W1 did not receive a quick task")
         self.held_at = time.monotonic()
@@ -251,23 +268,31 @@ class Smoke:
         require(reference is not None and reference[0] == tile, "server task input disagrees with C's split_inputs")
         return reference
 
-    def accept_quick(self, task):
+    def accept_quick(self, worker, task):
         require(task["job_id"] == self.job_id, "another job interfered with the smoke run")
         require(task["task_id"] not in self.completed_ids, "server leased an already completed task")
-        if task["task_id"] == self.held["task_id"]:
+        if getattr(self, "held", None) and task["task_id"] == self.held["task_id"]:
             require(task["lease_token"] != self.held["lease_token"], "reassignment reused the old lease token")
             self.recovered = True
         _, result, runtime = self.reference(task)
-        self.completion(self.w2, task, result, runtime)
+        self.completion(worker, task, result, runtime)
         self.completed_ids.add(task["task_id"])
-        self.last_done = task, result, runtime
+        self.worker_tiles[worker["worker_id"]] += 1
+        credit = self.device_credit[self.worker_devices[worker["worker_id"]]]
+        credit["tiles"] += 1
+        credit["iters"] += sum(result)
+        credit["runtime_ms"] += runtime
+        self.last_done = worker, task, result, runtime
 
     def stage6(self):
+        turn = 0
         while True:
-            task = self.lease(self.w2)
+            worker = (self.w2, self.w3)[turn % 2]
+            turn += 1
+            task = self.lease(worker)
             if task is None:
                 break
-            self.accept_quick(task)
+            self.accept_quick(worker, task)
             require(len(self.completed_ids) <= 48, "too many quick tasks")
         if not self.recovered:
             # Slow networks may already have expired/reassigned W1 while draining.
@@ -281,7 +306,7 @@ class Smoke:
             task = self.lease(self.w2)
             require(task is not None and task["task_id"] == self.held["task_id"],
                     "W2 did not recover W1's expired task")
-            self.accept_quick(task)
+            self.accept_quick(self.w2, task)
         require(self.recovered and len(self.completed_ids) == 48, "quick job did not complete exactly 48 unique tasks")
         detail = self.detail(self.job_id)
         require(detail.get("status") == "completed" and detail["counts"]["done"] == 48,
@@ -292,8 +317,8 @@ class Smoke:
         self.completion(self.w1, self.held, result, runtime, 409)
 
     def stage8(self):
-        task, result, runtime = self.last_done
-        self.completion(self.w2, task, result, runtime, 409)
+        worker, task, result, runtime = self.last_done
+        self.completion(worker, task, result, runtime, 409)
         stats = self.request("GET", "/api/stats")
         require(sum(w["tasks_done"] for w in stats["workers"]) == 48,
                 "worker task counters must sum to exactly 48 after stale/duplicate submissions")
@@ -313,6 +338,52 @@ class Smoke:
         detail = self.detail(self.bad_job)
         require(detail["counts"]["pending"] == 1 and detail["counts"]["done"] == 0,
                 "second rejected task must be pending, not completed")
+
+    def stage_contributions(self):
+        # Run before stage10 accepts its extra test tile. At this point the only
+        # accepted work is quick's 48 tiles, despite stale/duplicate/rejected posts.
+        report = self.request("GET", "/api/contributions")
+        require(report.get("unit") == "Miter"
+                and report.get("basis") == "sum of per-pixel iterations in accepted, spot-checked results",
+                "contribution unit/basis differs from contract")
+        rows = report["devices"]
+        require(len(rows) == 2 and {row["device_id"] for row in rows} == set(self.device_credit),
+                "three registrations must aggregate into exactly two device rows")
+        require(all(count > 0 for count in self.worker_tiles.values()),
+                "all three simulated workers must contribute accepted quick tiles")
+        reference_iters = sum(sum(result) for _, result, _ in self.cache.values())
+        require(sum(c["iters"] for c in self.device_credit.values()) == reference_iters,
+                "accepted quick work does not match the independently computed reference")
+        totals = report["totals"]
+        require(totals["devices"] == 2 and totals["tiles_done"] == 48
+                and sum(row["tiles_done"] for row in rows) == 48,
+                "contributions must count exactly 48 accepted tiles across two devices")
+        require(math.isclose(totals["verified_miter"], reference_iters / 1_000_000,
+                             rel_tol=0, abs_tol=1e-9),
+                "total contribution credit differs from compute_tile iteration sum")
+        expected_metadata = {
+            "dev_smokeshared01": (2, "Smoke-W2", "smoke-shared", ["browser", "native"]),
+            "dev_smokeother001": (1, "Smoke-W3", "smoke-other", ["native"]),
+        }
+        for row in rows:
+            credit = self.device_credit[row["device_id"]]
+            workers, name, owner, types = expected_metadata[row["device_id"]]
+            require(row["workers"] == workers and row["display_name"] == name
+                    and row["owner"] == owner and row["worker_types"] == types,
+                    "contribution metadata does not match registration history")
+            require(row["tiles_done"] == credit["tiles"] and row["compute_ms"] == credit["runtime_ms"],
+                    "device tile/runtime totals were lost or counted more than once")
+            require(math.isclose(row["verified_miter"], credit["iters"] / 1_000_000,
+                                 rel_tol=0, abs_tol=1e-9),
+                    "device credit must include only its accepted reference results")
+            require(row["share"] == round(credit["iters"] / reference_iters, 4),
+                    "device share differs from its fraction of accepted iterations")
+        require([row["device_id"] for row in rows] == sorted(
+            self.device_credit, key=lambda device: (-self.device_credit[device]["iters"], device)),
+            "contribution rows are not sorted by descending credit")
+        require(math.isclose(sum(row["verified_miter"] for row in rows), totals["verified_miter"],
+                             rel_tol=0, abs_tol=1e-9),
+                "device credit does not sum to reported total credit")
 
     def stage10(self):
         require(self.worker_action(self.w2, "pause").get("ok") is True, "pause was not acknowledged")
@@ -421,29 +492,29 @@ def main():
     passed = 0
     blocked = False
     try:
-        for index, label in enumerate(STAGES, 1):
+        for index, (method, label) in enumerate(STAGES, 1):
             if blocked:
-                print(f"FAIL {index:02d}/12 {label}: blocked by earlier failure")
+                print(f"FAIL {index:02d}/{len(STAGES)} {label}: blocked by earlier failure")
                 continue
             try:
-                getattr(smoke, f"stage{index}")()
+                getattr(smoke, method)()
             except Failure as exc:
-                print(f"FAIL {index:02d}/12 {label}: {exc}")
+                print(f"FAIL {index:02d}/{len(STAGES)} {label}: {exc}")
                 blocked = True
             except KeyboardInterrupt:
-                print(f"FAIL {index:02d}/12 {label}: interrupted")
+                print(f"FAIL {index:02d}/{len(STAGES)} {label}: interrupted")
                 blocked = True
             except Exception as exc:
-                print(f"FAIL {index:02d}/12 {label}: malformed response or integration error ({type(exc).__name__})")
+                print(f"FAIL {index:02d}/{len(STAGES)} {label}: malformed response or integration error ({type(exc).__name__})")
                 blocked = True
             else:
                 passed += 1
-                print(f"PASS {index:02d}/12 {label}", flush=True)
+                print(f"PASS {index:02d}/{len(STAGES)} {label}", flush=True)
     finally:
         smoke.cleanup()
-    print(f"Summary: {passed}/12 PASS; {12 - passed}/12 FAIL")
+    print(f"Summary: {passed}/{len(STAGES)} PASS; {len(STAGES) - passed}/{len(STAGES)} FAIL")
     print("This verifies HTTP contract behavior; real-device network tests and fault drills remain separate.")
-    return 0 if passed == 12 else 1
+    return 0 if passed == len(STAGES) else 1
 
 
 if __name__ == "__main__":

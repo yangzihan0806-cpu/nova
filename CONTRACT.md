@@ -1,9 +1,11 @@
-# TartanGrid 工程契约（CONTRACT v1.1）
+# TartanGrid 工程契约（CONTRACT v1.2）
+
+> v1.2（2026-11-07）：按随机 `device_id` 汇总接受结果的迭代积分；新增选填 `owner`、无损 schema 迁移、贡献 JSON / CSV（§5、§6.1、§6.4、§6.15–16、§9）；`TG_SPOT_CHECKS` 默认改为 8。按团队 TODO 的已定增量更新，既有 lease / retry 语义不变。
 
 > v1.1（2026-11-07）：AI Planner 在没有 `ANTHROPIC_API_KEY` 时改用主办方发的 OpenRouter key（§1、§3）；明确"用完次数的 pending task 在下次 reap 时判 failed"（§7）。其余不变。
 
 > 四人共享、**冻结**。任何人（包括你的 agent）不得单方面修改本契约或别人的文件。
-> 发现契约有问题：在群里提出，全员同意后由 D 升版本号（v1.1…）并通知所有人。
+> 发现契约有问题：在群里提出，全员同意后由 D 升版本号（v1.2…）并通知所有人。
 > 本文件放在 repo 根目录 `CONTRACT.md`。
 
 ---
@@ -15,6 +17,7 @@
 3. 不伪造数据：Dashboard 上每个数字都来自 API；未接入的东西（GPU 池、CMU HPC）只能标 `Planned / Not connected`。
 4. 同一个物理设备上的多个 slot 是**一个** worker，不能伪装成多台电脑。
 5. 不把 API key、token、`.db` 文件提交进 git（`.gitignore` 包含 `*.db`、`.env`）。
+6. 只记录积分，不提供金额、代币、兑换功能；最终奖励由团队另行决定。`device_id` 随机生成，不能使用硬件指纹；`owner` 自愿填写，用于团队关联贡献记录，不是身份认证。
 
 ---
 
@@ -49,6 +52,7 @@ python workers/native_worker.py --server https://xxxx.trycloudflare.com --name N
 | `/new.html` | `new.html` | 新建 Job（表单 + AI Planner） |
 | `/job.html?id=job_xxxxxx` | `job.html` | Job 详情 + Canvas |
 | `/contribute.html` | `contribute.html` | 浏览器贡献算力 |
+| `/contributions.html` | `contributions.html` | 设备贡献排名、时间筛选和 CSV 导出 |
 
 前端所有请求都用**相对路径** `/api/...`（同源，无 CORS）。
 
@@ -71,7 +75,7 @@ nova/
 │  ├─ planner.py                   # D  AI Planner，暴露 `router`
 │  ├─ presets.json                 # D  预设参数
 │  └─ static/
-│     ├─ index.html  new.html  job.html  contribute.html   # B
+│     ├─ index.html  new.html  job.html  contribute.html  contributions.html   # B
 │     ├─ common.js  style.css      # B  共享 JS 工具与样式
 │     ├─ mandelbrot_kernel.js      # C  JS kernel
 │     ├─ worker.js                 # C  Web Worker 执行循环
@@ -102,7 +106,7 @@ nova/
 | `TG_OFFLINE_AFTER_S` | `12` | 超过此秒数无心跳视为 offline |
 | `TG_MAX_ATTEMPTS` | `3` | 一个 task 最多被 lease 的次数 |
 | `TG_MAX_ACTIVE_JOBS` | `2` | 同时处于 queued/running 的 job 上限 |
-| `TG_SPOT_CHECKS` | `4` | 每个结果服务端随机重算的像素数 |
+| `TG_SPOT_CHECKS` | `8` | 每个结果服务端随机重算的像素数 |
 | `TG_PLANNER_MODEL` | `claude-haiku-5-5` | Planner 使用的模型 |
 | `ANTHROPIC_API_KEY` | — | 有则 Planner 用 Anthropic |
 | `OPENROUTER_API_KEY` | — | 没有 Anthropic key 时 Planner 用 OpenRouter（可写在仓库根目录 `.env`） |
@@ -172,6 +176,8 @@ def compute_pixel(px, py, p):          # px, py 是全图像素坐标；py = 0 �
 2. 随机抽 `TG_SPOT_CHECKS` 个像素，用 `compute_pixel` 重算，必须**完全相等**；
 3. 任一失败 → 422，task 重新入队（受 `TG_MAX_ATTEMPTS` 限制），记 `task_rejected` 事件。
 
+抽样重算是概率性检查，不能保证发现所有错误或作弊；“verified” 表示结果通过以上校验，不表示逐像素重算了整块 tile。
+
 ### 4.6 预设（`backend/presets.json`，D 负责调优）
 
 ```json
@@ -180,7 +186,7 @@ def compute_pixel(px, py, p):          # px, py 是全图像素坐标；py = 0 �
    "params": {"width": 512, "height": 384, "tile_size": 64, "max_iter": 256,
               "x_min": -2.2, "x_max": 1.0, "y_min": -1.2, "y_max": 1.2}},
   {"id": "demo", "label": "Demo — Seahorse Valley (heavy)",
-   "params": {"width": 2048, "height": 1536, "tile_size": 128, "max_iter": 8000,
+   "params": {"width": 2048, "height": 1536, "tile_size": 128, "max_iter": 20000,
               "x_min": -0.8, "x_max": -0.7, "y_min": 0.05, "y_max": 0.125}}
 ]
 ```
@@ -206,8 +212,11 @@ CREATE TABLE IF NOT EXISTS workers (
   offline_notified INTEGER NOT NULL DEFAULT 0,
   last_heartbeat   REAL NOT NULL,
   registered_at    REAL NOT NULL,
-  tasks_done       INTEGER NOT NULL DEFAULT 0
+  tasks_done       INTEGER NOT NULL DEFAULT 0,
+  device_id        TEXT,
+  owner            TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_workers_device ON workers(device_id);
 CREATE TABLE IF NOT EXISTS jobs (
   id          TEXT PRIMARY KEY,              -- "job_" + 6 hex
   task_type   TEXT NOT NULL,
@@ -233,7 +242,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   done_by       TEXT,
   runtime_ms    INTEGER,
   done_at       REAL,
-  done_seq      INTEGER                           -- = 完成时插入的 task_done 事件 id
+  done_seq      INTEGER,                          -- = 完成时插入的 task_done 事件 id
+  credit_iters  INTEGER                           -- 接受时写入 sum(result)
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, job_id, idx);
 CREATE TABLE IF NOT EXISTS events (
@@ -246,6 +256,17 @@ CREATE TABLE IF NOT EXISTS events (
   message   TEXT NOT NULL
 );
 ```
+
+**无损迁移**：`init_db()` 对已有数据库用 `PRAGMA table_info` 检查，逐项补缺列，再创建索引。可重复执行；不能要求清空现场 DB，也不能覆盖已有数据。
+
+```sql
+ALTER TABLE workers ADD COLUMN device_id TEXT;
+ALTER TABLE workers ADD COLUMN owner TEXT;
+ALTER TABLE tasks ADD COLUMN credit_iters INTEGER;
+CREATE INDEX IF NOT EXISTS idx_workers_device ON workers(device_id);
+```
+
+旧 worker 的 `device_id IS NULL` 在查询时按 `'wkr:' || id` 处理。旧的已完成 task 若 `credit_iters IS NULL`，贡献查询当场从存储的 `result_json` 求和，不改写历史数据。
 
 Worker 的派生状态（API 输出用）：
 
@@ -262,7 +283,7 @@ paused = 1                                → "paused"
 
 通用规则：
 
-- 请求/响应都是 JSON。错误格式为 FastAPI 默认的 `{"detail": ...}`。
+- 除 §6.16 的 CSV 响应外，请求/响应都是 JSON。错误格式为 FastAPI 默认的 `{"detail": ...}`。
 - **Worker 鉴权**：`/api/workers/{id}/*`（register 除外）和 `/api/tasks/*` 需要 header `Authorization: Bearer <token>`，并且 token 必须属于该 worker → 否则 401。
 - 状态码：200 成功；204 无任务；401 鉴权失败；404 不存在；409 lease 过期或重复提交；422 参数/结果不合法；429 active job 过多；503 Planner 不可用。
 
@@ -271,13 +292,18 @@ paused = 1                                → "paused"
 ```json
 // request
 {"name": "Browser-Harry", "worker_type": "browser", "slots": 1,
- "has_gpu": false, "task_types": ["mandelbrot_v1"], "client_info": "Chrome 131 / macOS"}
+ "has_gpu": false, "task_types": ["mandelbrot_v1"], "client_info": "Chrome 131 / macOS",
+ "device_id": "dev_3f9a1c2b7e4d4a10", "owner": "hyang2"}
 // response 200
 {"worker_id": "wkr_1a2b3c4d", "token": "<opaque>",
  "heartbeat_interval_s": 3, "lease_ttl_s": 10}
 ```
 
 约束：`name` 1–40 字符；`worker_type` ∈ {browser, native}；`slots` 1–8；`client_info` ≤ 200 字符，可省略。`has_gpu` 只做展示，MVP 不据此调度。记事件 `worker_joined`。
+
+- `device_id` 选填，非 null 时必须匹配 `^dev_[a-z0-9]{8,32}$`，否则 422。缺省或显式 `null` 时，服务端使用 `"wkr:" + worker_id`，兼容旧客户端；每次注册仍生成独立的 `worker_id` 和 token，响应不变。
+- `owner` 选填，去首尾空白后须为 1–40 字符；空字符串、纯空白、缺省或 `null` 都按未填写处理；超长返回 422。
+- `worker_joined` 不新增事件类型；有 owner 时 message 包含 owner，例如 `Browser-1658 joined (browser, 1 slot, owner hyang2)`。
 
 ### 6.2 `POST /api/workers/{id}/heartbeat`
 
@@ -310,7 +336,8 @@ request `{}`。
 
 - `status='leased' AND lease_token` 匹配才接受，否则 **409** `{"detail": "stale_lease"}`。这包括重复提交和旧 lease 的迟到结果。
 - 结果验证失败 → **422**，task 回到 pending（或在超过次数后变为 failed）。
-- 接受时：task 变为 `done`，写入 `done_by`、`runtime_ms`、`done_at`，`done_seq` = 本次 `task_done` 事件 id；`workers.tasks_done += 1`；如果该 job 的所有 task 都已 done → job 变为 `completed`，写入 `finished_at`，记 `job_completed`。
+- 接受时：task 变为 `done`，写入 `done_by`、`runtime_ms`、`done_at`，`done_seq` = 本次 `task_done` 事件 id；**在同一个事务**内写入整数 `credit_iters = sum(result)`，`workers.tasks_done += 1`；如果该 job 的所有 task 都已 done → job 变为 `completed`，写入 `finished_at`，记 `job_completed`。
+- 被拒（422）、失效 / 已重派 lease（409）、重复或其他 worker 的提交都不记功。重派 tile 只计给最终结果被接受的 `done_by`。既有“过期但尚未 reap”的接受规则见 §7；积分始终以实际接受结果为准。
 
 ### 6.5 `POST /api/tasks/{task_id}/fail`
 
@@ -414,6 +441,44 @@ A 在 `main.py` 中挂载：`try: from planner import router as planner_router; 
 
 ### 6.14 `GET /healthz` → `{"ok": true}`
 
+### 6.15 `GET /api/contributions?since=&until=`
+
+`since`、`until` 都选填，必须是带 `Z` 或 UTC offset 的 ISO 8601 datetime，例如 `2026-11-07T12:00:00Z` 或 `2026-11-07T08:00:00-04:00`。按 `tasks.done_at >= since`、`tasks.done_at <= until` **包含边界**过滤，统一按 UTC 比较。无时区、无效时间或 `since > until` 返回 422；省略即不限制该边界。
+
+```json
+{"generated_at": "2026-11-07T17:20:45.123Z", "unit": "Miter",
+ "basis": "sum of per-pixel iterations in accepted, spot-checked results",
+ "totals": {"devices": 3, "tiles_done": 1200, "verified_miter": 152340.5},
+ "devices": [
+   {"device_id": "dev_3f9a1c2b7e4d4a10", "display_name": "Native-LAPTOP-YANGZIHA", "owner": "hyang2",
+    "worker_types": ["native"], "workers": 3,
+    "tiles_done": 900, "verified_miter": 120000.1, "share": 0.7877,
+    "compute_ms": 210000, "online_s": 5400.0,
+    "first_seen": "2026-11-07T15:00:00.000Z", "last_seen": "2026-11-07T17:20:42.000Z"}
+ ]}
+```
+
+- 按 `COALESCE(workers.device_id, 'wkr:' || workers.id)` 合并注册会话；只汇总 `tasks.status='done'`，用 `tasks.done_by = workers.id` 关联。包含所有注册过的设备，`left` / `offline` 和零积分也保留；`totals.devices` 为这些设备 ID 的数量，不保证是不同物理机器。
+- `display_name` 和 `owner` 使用该设备**最近一次注册**的值；时间相同则后插入的注册优先。最近注册未填 owner 时输出 `null`，不会继承旧值。
+- `worker_types` 为全部注册历史中的去重、排序类型列表；`workers` 为注册次数，各会话只计一次，不能因 tile 关联而重复。
+- `tiles_done` 为筛选范围内接受的 tile 数。先精确汇总整数迭代次数，再除以 1,000,000 得到 `verified_miter`。总计同理；不得逐 tile 先四舍五入。
+- `share = round(本设备迭代次数 / 所有设备迭代次数, 4)`；总积分为 0 时各 share 为 0。按积分降序排列，同分按 `device_id` 升序；舍入后 share 合计可能略偏离 1。
+- `compute_ms` 为范围内接受结果的 `runtime_ms` 之和。`online_s` 为各注册会话的 `last_heartbeat - registered_at` 之和，各会话只计一次；它不是去重墙钟时长。两者只作参考，不参与积分。
+- `first_seen = min(registered_at)`，`last_seen = max(last_heartbeat)`。时间筛选只影响 `tiles_done`、`verified_miter`、`share`、`compute_ms` 及对应总计；注册元数据和 `online_s` 保持全部历史口径。
+- 无设备时 `devices=[]`，总计的三个字段均为 0。
+
+### 6.16 `GET /api/contributions.csv?since=&until=`
+
+接受与 §6.15 相同的筛选、校验和排序；UTF-8 CSV，每台设备一行（没有额外总计行），除下述表格公式转义外，值与同范围 JSON 一致。表头固定：
+
+```text
+device_id,display_name,owner,worker_types,workers,tiles_done,verified_miter,share,compute_ms,online_s,first_seen,last_seen
+```
+
+`worker_types` 用 `;` 分隔，null owner 导出为空字段；逗号、引号、换行使用标准 CSV quoting。响应头 `Content-Disposition: attachment; filename="tartangrid_contributions.csv"`。
+
+`display_name` / `owner` 去掉前导空白后若以 `= + - @` 开头，或原值以 tab / CR / LF 开头，CSV 在原值前加一个单引号，防止表格软件按公式执行。JSON 和数据库保留原值；计数字段仍为数字。mock 导出采用同样规则。
+
 ---
 
 ## 7. 调度语义（A 实现，其他人据此理解行为）
@@ -458,7 +523,7 @@ RETURNING id, job_id, input_json, attempts;
 `static/contributor.js` 定义全局类 `TartanContributor`：
 
 ```js
-const c = new TartanContributor({ name: "Browser-Harry", slots: 1 });
+const c = new TartanContributor({ name: "Browser-Harry", slots: 1, owner: "hyang2" });
 c.on("status", s => {});
 //  s = { state: "idle"|"connecting"|"running"|"paused"|"stopped"|"error",
 //        workerId, slots, tasksDone, currentTaskIds: [..], lastRuntimeMs, lastError }
@@ -471,6 +536,10 @@ await c.stop();     // POST /disconnect + terminate 所有 Web Worker
 ```
 
 页面隐藏时是否自动 pause 由 B 的页面决定（默认勾选，调用 `c.pause()` / `c.resume()`）。
+
+浏览器用 `crypto.getRandomValues` 生成 `"dev_" + 16 位小写 hex`，保存在 localStorage 的 `tg_device_id`，刷新 / 重新注册沿用。localStorage 不可用时使用本次会话随机 ID；不得采集硬件指纹。`owner` 是选填构造参数，注册时连同 device_id 发送；页面负责用 try/catch 安全保存选填 owner 并解释用途。
+
+Native 将随机 device_id 保存在 `~/.tartangrid/device_id`（Windows：`%USERPROFILE%\.tartangrid\device_id`），重启沿用；`--owner` 提供选填 owner。同机浏览器和 native 使用独立存储，因此通常显示为两个 device_id，可以通过相同 owner 人工对应，不能据此证明身份或物理设备数。
 
 `static/mandelbrot_kernel.js` 定义全局函数 `computeTile(input) -> Int32Array`（输入为 §4.2 的 input），并在 Node 下 `module.exports = { computeTile }`。B 的 job 页"单机基线"按钮也会用到它。
 
