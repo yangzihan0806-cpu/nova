@@ -100,3 +100,15 @@ Screen: Contributions page.
 **Can it only compute fractals?** Right now only this one reviewed template is enabled, for safety (no arbitrary code) and because it's visual. The platform layer is general; adding a new workload only requires plugging in one reviewed compute module.
 
 **How much speedup?** 25.8 seconds on 3 devices: 3.76× faster than one browser thread and 1.67× faster than the server laptop alone, all measured end to end. Two early runs were slower than a single machine because of a localhost configuration issue on Windows; the README records them as they happened.
+
+## Optional security audit demonstration (about 60 seconds)
+
+This increment demonstrates **evidence of existing submission checks**. It does not implement requester authentication, per-user quotas, GPU authorization or the full Sandia P0. Only demonstrate it after the feature is merged, deployed and the server operator configures the dedicated `TG_SECURITY_AUDIT_TOKEN` using the README instructions.
+
+1. Privately paste the reader credential into the Dashboard's Security audit card and click Unlock. The input clears and the credential stays in page memory. Keep credentials and setup output off the projector.
+2. Submit a normal Quick job. A real Allowed event, request ID and job link appear; the existing Worker network completes the image.
+3. Use a prepared API client to POST `{"task_type":"arbitrary_python","params":{"command":"echo should_not_execute"}}` to `/api/jobs`. This is text inside an invalid request, not a command to execute. Expect 422 plus X-Request-ID; the panel shows Blocked / UNAPPROVED_WORKLOAD with the same ID, and no job is added.
+4. Explain: "The existing backend allowlist also rejects direct API submissions, and the rejection now has real audit evidence." Do not claim verified user identity or protection against every prompt attack. The credential controls audit reading only.
+5. Click Lock to clear events and counts. An unavailable API shows unavailable, not zero events. Clear the credential from the clipboard after the demonstration.
+
+For automation, run `scripts/security_demo.py` only against your own fresh temporary database and loopback server, never the live demo service. It submits and computes a small real job; expect 7/7 PASS.

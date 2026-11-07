@@ -65,6 +65,21 @@ h2 { font-size: 13px; margin: 0 0 10px; text-transform: uppercase; letter-spacin
 .stack > * + * { margin-top: 14px; }
 .stack { min-width: 0; }
 
+/* ---------- access-controlled submission audit ---------- */
+.audit-counts { display: flex; gap: 28px; margin: 12px 0; }
+.audit-counts > div { display: flex; flex-direction: column; gap: 3px; }
+.audit-counts strong { font-size: 24px; }
+.audit-unlock-row { display: flex; gap: 8px; align-items: center; }
+.audit-unlock-row input { min-width: 0; flex: 1; }
+.audit-unlock-row button { flex-shrink: 0; }
+.audit-events { padding: 0; margin: 0; list-style: none; max-height: 360px; overflow-y: auto; }
+.audit-events li { padding: 10px 0; border-top: 1px solid var(--line); }
+.audit-events li > * + * { margin-top: 4px; }
+.audit-event-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; }
+.audit-allow { color: var(--green); }
+.audit-deny { color: #ff6b81; }
+.audit-id { overflow-wrap: anywhere; }
+
 .cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
 .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .8px; }

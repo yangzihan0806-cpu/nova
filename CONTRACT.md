@@ -1,4 +1,6 @@
-# TartanGrid Engineering Contract (CONTRACT v1.2)
+# TartanGrid Engineering Contract (CONTRACT v1.3)
+
+> v1.3 (2026-11-07): added persistent submission audit, protected read access (§6.17), and X-Request-ID correlation. This is an audit-only increment; requester authentication, per-user quotas and GPU authorization remain future work. Existing job bodies, Worker and contribution protocols remain compatible.
 
 > v1.2 (2026-11-07): verified iteration credit is aggregated per random `device_id`; added optional `owner`, a lossless schema migration, and contribution JSON / CSV (§5, §6.1, §6.4, §6.15–16, §9); `TG_SPOT_CHECKS` default changed to 8. Updated with the increments agreed in the team TODO; existing lease / retry semantics are unchanged.
 
@@ -478,6 +480,40 @@ device_id,display_name,owner,worker_types,workers,tiles_done,verified_miter,shar
 `worker_types` is `;`-separated, a null owner is exported as an empty field; commas, quotes and newlines use standard CSV quoting. Response header `Content-Disposition: attachment; filename="tartangrid_contributions.csv"`.
 
 If `display_name` / `owner`, after stripping leading whitespace, starts with `= + - @`, or the original value starts with tab / CR / LF, the CSV prefixes the original value with a single quote so spreadsheet software does not execute it as a formula. JSON and the database keep the original value; count fields stay numeric. The mock export follows the same rule.
+
+---
+
+### 6.17 Submission audit and `GET /api/security/events?limit=50`
+
+This increment records the existing `POST /api/jobs` checks; it adds no requester authentication or quota policy. Submission remains anonymous. Owner labels, Worker tokens and client-supplied identity/request-ID headers are not verified identities. Every audit event has `actor_id="anonymous"` and `action="submit_job"`.
+
+- Each successful HTTP submission inserts one `allowed` event in the **same transaction** as its Job/Tasks. Existing schema/body-parsing failures and active-job-limit rejections insert one `denied` event. Other APIs, historical jobs and internal scheduler calls do not fabricate submission events.
+- Submission responses include server-generated `X-Request-ID: req_<24 hex>` matching the audit. Client-supplied IDs are ignored. Existing normal success/422/429 bodies remain compatible; malformed text/deep validation inputs use a safe fixed 422 detail when their error inputs cannot be serialized.
+- New `security_events` table: auto-increment id, UTC timestamp, unique request_id, decision, reason_code, fixed details, optional job_id. Startup creates it if absent, preserving jobs, contributions and logs in `TG_DB_PATH`.
+- Audit stores fixed redacted details, never bodies, prompts, headers, IPs, names, owner labels, access tokens or model keys. Records are persistent, but not tamper-proof or verified actor attribution. There is no automatic retention limit.
+- If accepted audit persistence fails, Job/Tasks roll back together and return `503 {"detail":"security_events_unavailable"}`. Failed denial logging also returns 503 without creating work. This surfaces missing evidence instead of claiming successful auditing.
+
+Reading requires `Authorization: Bearer <audit-reader-token>`. The server process configures `TG_SECURITY_AUDIT_TOKEN`: 32–256 URL-safe `[A-Za-z0-9_-]` characters; use `secrets.token_urlsafe(32)` for generation. This is not a Worker token, OpenRouter key or submission permission. Missing/invalid configuration returns 503; missing/wrong credentials return `401 {"detail":"audit_auth_required"}` with `WWW-Authenticate: Bearer`. Query/storage failures return 503. Read responses, including errors, use `Cache-Control: private, no-store`. Credentials belong in headers, never URLs.
+
+`limit` is 1–100, default 50; invalid values return422. Events are newest first by auto-increment id. Totals cover **all persisted events since auditing was enabled on this database**, independent of limit. Successful empty reads return zero counts.
+
+```json
+{
+  "generated_at": "2026-11-07T20:00:00.000Z",
+  "scope": "since_audit_enabled",
+  "totals": {"allowed": 1, "blocked": 0},
+  "events": [{
+    "event_id": "evt_1", "timestamp": "2026-11-07T19:59:00.000Z",
+    "request_id": "req_0123456789abcdef01234567", "actor_id": "anonymous",
+    "action": "submit_job", "decision": "allowed", "reason_code": "SUBMISSION_ACCEPTED",
+    "details": "Existing submission checks passed; job created.", "job_id": "job_123abc"
+  }]
+}
+```
+
+These are example values, not measurements. Reason codes: `SUBMISSION_ACCEPTED` for success; `UNAPPROVED_WORKLOAD` for unknown task types; `INVALID_TASK_PARAMS` for other schema/body failures; `ACTIVE_JOB_LIMIT` for the existing global concurrency cap; `SUBMISSION_REJECTED` for other submission 4xx. Denied events have null job_id.
+
+The Dashboard starts locked. Credentials stay only in current-page memory and clear on lock/reload/navigation. It polls every 5 seconds. Failed reads show `Security events unavailable` and clear prior events/counts, never fake zeroes. Mock mode explicitly provides no security evidence.
 
 ---
 

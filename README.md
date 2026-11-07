@@ -44,7 +44,7 @@ flowchart TB
 
 | Page | What you can do |
 |---|---|
-| **Dashboard** `/` | Live node list (browser / native, online / paused / offline), event feed with highlighted reassignments, recent jobs, top contributors |
+| **Dashboard** `/` | Live node list (browser / native, online / paused / offline), event feed with highlighted reassignments, recent jobs, top contributors, protected submission audit |
 | **New Job** `/new.html` | Pick a preset, edit parameters, or describe the job in one sentence to the **AI Planner**, which fills in the form; nothing runs until you press Submit |
 | **Job** `/job.html?id=…` | Image drawn tile by tile, outlines on tiles being computed, **Color by worker** overlay, per-worker tile counts, **Run baseline** (single-device timing and speedup), PNG download |
 | **Contribute** `/contribute.html` | Lend this device: name, optional owner label, slots, Start / Pause / Resume / Disconnect, auto-pause when the tab is hidden; works on phones |
@@ -107,6 +107,7 @@ Environment variables for the server; defaults are what we demo with.
 | `TG_SPOT_CHECKS` | `8` | Pixels recomputed per result |
 | `TG_DB_PATH` | `backend/tartangrid.db` | SQLite file; older databases are migrated in place on startup |
 | `TG_RESET_DB` | `0` | `1` wipes the database on start (tests only) |
+| `TG_SECURITY_AUDIT_TOKEN` | unset | Dedicated audit-read credential: 32–256 URL-safe characters. Missing/invalid configuration disables reading; submissions are still recorded |
 
 ## Contribution tracking
 
@@ -116,12 +117,40 @@ Environment variables for the server; defaults are what we demo with.
 - **Points only.** There is no money, no token and no redemption; rewards are decided by the team.
 - **API:** `GET /api/contributions` returns JSON and `GET /api/contributions.csv` returns CSV; both accept ISO `since` / `until` filters.
 
+## Submission security audit (Sandia demo slice)
+
+Every HTTP job submission records the result of the existing server checks: accepted jobs, unknown task types/fields, malformed JSON, invalid parameters and the global active-job limit. The event contains a server-generated request ID, UTC time, decision, fixed redacted reason and a job ID only on success. The same request ID is returned in `X-Request-ID`. No request body, prompt, IP, owner label, token or API key is stored in the audit table.
+
+This feature adds evidence for existing controls. It does **not** add requester authentication, per-user quotas, GPU/HPC permissions, a new policy engine or general prompt-injection protection. All submitters are labeled `anonymous`; a contribution owner is not a verified identity. Existing Planner and Worker access rules remain unchanged. The audit reader credential only permits viewing the audit; it is separate from Worker tokens and model API keys.
+
+The operator sets `TG_SECURITY_AUDIT_TOKEN` in the server process environment before starting it. It has no built-in default and is not loaded from `.env` by this feature. Example in PowerShell, from the repository root:
+
+```powershell
+$env:TG_SECURITY_AUDIT_TOKEN = & .\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(32))"
+Set-Clipboard $env:TG_SECURITY_AUDIT_TOKEN
+.\tg_server.bat
+```
+
+Wait for any running jobs before restarting an existing server. Keep the tunnel running and preserve `.env` and `backend/tartangrid.db`. Store/share the reader credential privately with authorized viewers; the example keeps it in that PowerShell process and copies it to the clipboard for pasting into the Dashboard's **Security audit** field. Do not put it in a URL, screenshot or commit. Generating a new token before a later restart rotates reader access without deleting logs.
+
+On the Dashboard, paste the credential and click **Unlock**. It is used only by the audit read request, stays in page memory, and is forgotten on **Lock**, reload or navigation. The panel polls every five seconds. Failed reads clear the displayed evidence and show **Security events unavailable**; they do not show fake zeroes. Mock mode provides no security evidence.
+
+`GET /api/security/events?limit=50` accepts the credential as an Authorization Bearer header, returns the newest 1–100 events, and prohibits caching. Allowed/Blocked counts cover all persisted audit records in this database, not just the displayed page. Old jobs are not backfilled as audit events. Records survive server restarts; they have no automatic retention limit and are not tamper-proof. Operators should account for database growth on public deployments.
+
+Successful submission and its allowed audit commit together. If audit storage fails, the new job and all its tasks roll back and the request returns 503; failed denial logging also returns 503 without creating work. This intentionally makes storage failure visible rather than silently losing evidence. Existing computations and worker protocols are unaffected by the read credential.
+
+Audit feature validation on an isolated cloud server: 179 Python tests (34 audit cases), 8 Node identity tests, 7/7 audit demo and 13/13 contract smoke checks passed. Browser acceptance covered real computation plus desktop/mobile audit states. Field deployment of this audit feature is pending.
+
 ## Testing
 
 ```bash
-env -u OPENROUTER_API_KEY -u ANTHROPIC_API_KEY PYTHON_DOTENV_DISABLED=1 python -m pytest tests -q   # 145 tests
+env -u OPENROUTER_API_KEY -u ANTHROPIC_API_KEY PYTHON_DOTENV_DISABLED=1 python -m pytest tests -q   # 179 tests
 node --test tests/test_contributor_identity.js                                                    # browser identity
 ```
+
+**Security audit acceptance:** `python scripts/security_demo.py --server http://127.0.0.1:8001` runs seven checks against a fresh disposable server. Both processes must receive the same `TG_SECURITY_AUDIT_TOKEN`. It checks reader access, four denied requests with no work, real accepted computation, redaction and unchanged contribution credit; it refuses non-loopback URLs or a nonempty server. Use a separate fresh DB for the contract smoke below, because each script creates its own jobs.
+
+Optional UI acceptance: install Playwright (`npm install --no-save playwright`) and Chromium, then run `node scripts/check_security_audit_ui.js`. It starts and stops its own loopback server with a temporary DB and random test credential, exercises actual browser computation plus unlock/lock/error/retry/mobile states, and prints the temporary screenshot directory. Set `TG_TEST_PYTHON` or `TG_CHROMIUM_PATH` if your Python/Chromium lives elsewhere. It never uses the live tunnel or calls the AI provider.
 
 **Contract smoke test.** Run it against a throwaway server only, never a live demo:
 
@@ -174,12 +203,15 @@ backend/
   main.py db.py schemas.py scheduler.py    API, database, scheduling, validation, contributions
   mandelbrot.py                            Python compute kernel (numba / numpy)
   planner.py presets.json                  AI Planner, job presets
+  security_audit.py                         Persistent submission audit and protected reader API
   static/                                  Web pages, browser worker (worker.js, contributor.js, mandelbrot_kernel.js)
 workers/   native_worker.py benchmark.py   Native worker, speed test
 scripts/   smoke_test.py                   API contract test
+           security_demo.py                Disposable-server audit acceptance
+           check_security_audit_ui.js       Optional Playwright audit/UI acceptance
 tests/                                     Unit tests (Python + Node)
 tg_*.bat                                   Windows double-click helpers
-CONTRACT.md                                Interface spec shared by the four parts (v1.2)
+CONTRACT.md                                Interface spec shared by the four parts (v1.3)
 DEMO.md                                    Live demo script and checklist
 ```
 

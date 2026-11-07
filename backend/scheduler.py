@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from fastapi import HTTPException
 
 import db
+import security_audit
 from schemas import JobParams
 
 
@@ -63,7 +64,7 @@ def authenticate(worker_id, token):
             raise HTTPException(401, 'unauthorized')
 
 
-def create_job(params, now):
+def create_job(params, now, audit_request_id=None):
     if not isinstance(params, JobParams):
         params = JobParams.model_validate(params)
     p = params.model_dump()
@@ -88,6 +89,8 @@ def create_job(params, now):
                 tiles.append((job_id, len(tiles), 'mandelbrot_v1', json.dumps(data)))
         conn.executemany('INSERT INTO tasks(job_id,idx,task_type,input_json) VALUES (?,?,?,?)', tiles)
         log_event(conn, now, 'job_created', f'Job {job_id} created with {count} tiles', job_id=job_id)
+        if audit_request_id is not None:
+            security_audit.record(conn, audit_request_id, 'allowed', 'SUBMISSION_ACCEPTED', now, job_id)
     return dict(job_id=job_id, status='queued', task_count=count)
 
 

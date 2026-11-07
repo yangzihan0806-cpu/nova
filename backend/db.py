@@ -91,6 +91,16 @@ CREATE TABLE IF NOT EXISTS events (
   worker_id TEXT,
   message   TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS security_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts          REAL NOT NULL,
+  request_id  TEXT NOT NULL UNIQUE,
+  decision    TEXT NOT NULL CHECK(decision IN ('allowed','denied')),
+  reason_code TEXT NOT NULL,
+  details     TEXT NOT NULL,
+  job_id      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_security_decision ON security_events(decision);
 """
 
 

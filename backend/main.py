@@ -10,7 +10,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -19,6 +19,7 @@ from pydantic import ValidationError
 
 import db
 import scheduler
+import security_audit
 from schemas import CompleteReq, ContributionWindow, EmptyReq, FailReq, JobCreate, PlannerReq, RegisterReq
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -53,7 +54,19 @@ def _finite_json(value):
 def validation_error(request, exc):
     # Keep FastAPI's detail shape; non-finite rejected inputs cannot be emitted
     # as JSON numbers (otherwise the intended 422 becomes a serialization 500).
-    return JSONResponse(status_code=422, content={'detail': _finite_json(jsonable_encoder(exc.errors()))})
+    request_id = getattr(request.state, 'audit_request_id', None)
+    headers = {'X-Request-ID': request_id} if request_id else {}
+    if request.url.path == '/api/security/events':
+        headers.update(security_audit.NO_STORE)
+    try:
+        return JSONResponse(status_code=422, content={'detail': _finite_json(jsonable_encoder(exc.errors()))},
+                            headers=headers)
+    except (UnicodeError, RecursionError):
+        # Invalid text and deeply nested input can break error serialization too.
+        # Preserve rejection/correlation without echoing unrepresentable input.
+        return JSONResponse(status_code=422, content={'detail': [{
+            'type': 'value_error', 'loc': ['body'], 'msg': 'Invalid request body',
+        }]}, headers=headers)
 
 
 def require_worker(worker_id, authorization):
@@ -110,9 +123,16 @@ def fail(task_id: int, body: FailReq, authorization: str | None = Header(default
     return scheduler.fail(task_id, **body.model_dump(), now=time.time())
 
 
-@app.post('/api/jobs')
-def create_job(body: JobCreate):
-    return scheduler.create_job(body.params, time.time())
+job_submissions = APIRouter(route_class=security_audit.AuditedJobRoute)
+
+
+@job_submissions.post('/api/jobs')
+def create_job(body: JobCreate, request: Request):
+    return scheduler.create_job(body.params, time.time(), request.state.audit_request_id)
+
+
+app.include_router(job_submissions)
+app.include_router(security_audit.router)
 
 
 @app.get('/api/jobs')
