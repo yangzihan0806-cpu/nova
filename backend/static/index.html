@@ -145,14 +145,15 @@
 
     async function pollContributions() {
       const data = await TG.api("/api/contributions");
-      const devices = TG.rankContributions(data.devices).slice(0, 3);
+      // Same default as the Contributions page: only devices with an owner label.
+      const devices = TG.rankContributions(TG.ownedOnly(data).devices).slice(0, 3);
       TG.$("#top-contributors").replaceChildren(...(devices.length ? devices.map((d, i) =>
         el("li", { "data-device-id": d.device_id },
           el("span", { class: "muted num" }, i + 1), TG.workerDot(d.device_id),
           el("span", { class: "contributor-name" }, el("strong", null, d.display_name),
             d.owner ? el("span", { class: "muted small" }, d.owner) : null),
           el("span", { class: "num contributor-credit" }, TG.fmtMiter(d.verified_miter), el("span", { class: "muted small" }, " Miter")))) :
-        [el("li", { class: "muted" }, "No devices yet. Start contributing to join the list.")]));
+        [el("li", { class: "muted" }, "No devices with an owner yet. Add an owner on the Contribute page.")]));
     }
 
     // ---------- events ----------

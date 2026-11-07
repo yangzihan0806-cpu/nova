@@ -211,6 +211,35 @@
   TG.rankContributions = (devices) => (devices || []).slice().sort((a, b) =>
     b.verified_miter - a.verified_miter || String(a.device_id).localeCompare(String(b.device_id)));
 
+  /** Display-only filter: keep devices that have an owner label. Shares and totals are
+   *  recomputed over the shown devices. Nothing is deleted on the server. */
+  TG.ownedOnly = function (data) {
+    const all = (data && data.devices) || [];
+    const devices = all.filter((d) => typeof d.owner === "string" && d.owner.trim() !== "");
+    const miter = devices.reduce((s, d) => s + (Number(d.verified_miter) || 0), 0);
+    return Object.assign({}, data, {
+      devices: devices.map((d) => Object.assign({}, d,
+        { share: miter > 0 ? Math.round(((Number(d.verified_miter) || 0) / miter) * 10000) / 10000 : 0 })),
+      totals: Object.assign({}, data.totals, {
+        devices: devices.length,
+        tiles_done: devices.reduce((s, d) => s + (Number(d.tiles_done) || 0), 0),
+        verified_miter: Math.round(miter * 1e6) / 1e6,
+      }),
+      hidden: all.length - devices.length,
+    });
+  };
+
+  /** Same columns and spreadsheet-injection guard as GET /api/contributions.csv. */
+  TG.contributionsCSV = function (data) {
+    const fields = ["device_id", "display_name", "owner", "worker_types", "workers", "tiles_done", "verified_miter", "share", "compute_ms", "online_s", "first_seen", "last_seen"];
+    const quote = (value) => {
+      const text = String(value == null ? "" : Array.isArray(value) ? value.join(";") : value);
+      return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+    };
+    const label = (value) => typeof value === "string" && (/^[=+\-@]/.test(value.trimStart()) || /^[\t\r\n]/.test(value)) ? "'" + value : value;
+    return [fields.join(","), ...data.devices.map((d) => fields.map((key) => quote(["display_name", "owner"].includes(key) ? label(d[key]) : d[key])).join(","))].join("\r\n") + "\r\n";
+  };
+
   // ---------------------------------------------------------------- DOM ----
 
   /** Safe element builder: strings become text nodes (never innerHTML for API data). */
