@@ -20,7 +20,7 @@ The demo job renders a Mandelbrot fractal: every tile is independent, so you can
 | AI Planner with a real API key | **Passed on the live demo server** with the organizers' OpenRouter key: a normal prompt (~3 s) and 3 hostile prompts (`run this python code`, `use all CMU GPUs`, `width 100000`) all returned valid Mandelbrot parameters |
 | Performance on our own devices | First numbers in [Measured results](#measured-results) |
 | Field failure recovery, `demo max_iter=20000` | **Passed**: 31.8 s, native 181 tiles + a second laptop's browser (Browser-1658) 11, one lease expiry and reassignment, 0 failed (run 4) |
-| One-device reference for `max_iter=20000` | Laptop alone: 43.2 s (run 5). Adding one browser device: 31.8 s and 30.4 s, about **1.4×** (runs 4 and 6). A single-thread browser baseline is not measured |
+| Speed at `max_iter=20000` | 3 devices (2 browsers + native): **25.8 s**, **3.76×** vs one browser thread (97.2 s), **1.67×** vs the laptop alone (43.2 s), run 7 |
 | Contribution tracking on the live server | **Deployed and verified**: migration kept all 2076 earlier tiles; new device IDs and owners recorded; reload merges into one row; CSV export works; devices without an owner are hidden by default (data kept) |
 
 ## How it works
@@ -235,6 +235,7 @@ $$\text{Speedup} = \frac{T_{\text{single}}}{T_{\text{distributed}}}$$
 | 4 | demo, `max_iter` 20000 (tile 128) | laptop native 181, second laptop's browser (Browser-1658) 11; **1 tile reassigned** after a tab was closed | 43.2 s (run 5) | **31.8 s** | **1.36×** |
 | 5 | same image and `max_iter` 20000, tile 64 (768 tiles) | laptop native only (4 slots) 768 | — (this *is* the one-device reference) | 43.2 s | — |
 | 6 | demo, `max_iter` 20000 (tile 128) | laptop native 168, second laptop's browser (Browser-1658) 24 | 43.2 s (run 5) | **30.4 s** | **1.42×** |
+| 7 | demo, `max_iter` 20000 (tile 128) | **3 devices, 3 owners**: laptop native 143 (zihanyan), Browser-9000 27 (zibowang), Browser-1658 22 (fdeng) | 97.2 s (laptop browser, 1 thread) · 43.2 s (laptop native alone, run 5) | **25.8 s** | **3.76×** vs one browser thread · **1.67×** vs the laptop alone |
 
 Runs 1–2 were slow because of a Windows bug in our setup, not the scheduler: the native worker connected to `localhost`, and each request waited about 2 s for an IPv6 attempt to fail (each tile needs 2 requests). Switching to `127.0.0.1` fixed it (run 3). Run 2 also accidentally had two native copies on the same laptop.
 
@@ -245,8 +246,8 @@ After run 3 the `demo` preset was raised to `max_iter` 20000 so the job lasts lo
 - **Run 4 (fault drill):** a contributor's browser tab was closed mid-job. Task 1118 emitted `lease_expired` and the native worker took it on attempt 2. The job still completed in 31.8 s with **one reassignment and zero failed tiles**.
 - **Run 5 (one-device reference):** the same 2048×1536 image at `max_iter` 20000, computed by the laptop alone (native, 4 slots) through the scheduler: 43.2 s. It used 64-px tiles (768 tiles) instead of 128-px (192 tiles). The total pixels and iterations are the same, but there is a little more per-tile overhead, so the speedups for runs 4 and 6 are approximate.
 - **Runs 4 and 6:** adding one browser on a second laptop (Browser-1658) to the server laptop cut the time from 43.2 s to about 31 s.
+- **Run 7 (full setup):** two browser devices owned by different teammates plus the native laptop, all at the same time: 25.8 s, 0 failed tiles. The *Run baseline* button measured 97.2 s for the same job in one browser thread on the server laptop, which gives **3.76×**. Compared with the laptop's own 4-slot native run (run 5), the gain is **1.67×**. Both numbers are end-to-end and include network and scheduling overhead.
 
-Not measured yet: a single-thread browser baseline at `max_iter` 20000 (*Run baseline* on the job page), and a run with two browser devices plus the native laptop at the same time.
 
 **Tuning target** (not a result): on the slowest device each tile should take 0.3–2 s, and the whole demo job should take 30–60 s with all devices, which leaves time to show a failure and recovery. If the `demo` preset is too slow, lower `max_iter` or the resolution in `backend/presets.json`. Keep the 4:3 shape.
 
@@ -256,7 +257,7 @@ Not measured yet: a single-thread browser baseline at `max_iter` 20000 (*Run bas
 |---|---|
 | Another device opens the server over the venue Wi-Fi (LAN address) | not tested (not needed) |
 | Another device opens the `cloudflared` HTTPS address | **works** (one phone browser joined; server and native ran on Harry's Windows laptop) |
-| Second physical laptop joins through the tunnel | **Works**: a second laptop's browser (Browser-1658) computed tiles in runs 4 and 6. Still to do: two browser devices plus the native worker at the same time |
+| Second physical laptop joins through the tunnel | **Works**: Browser-1658 in runs 4, 6 and 7; with Browser-9000, two browser devices plus the native worker ran together in run 7 |
 | Fallback: all devices on one phone hotspot | not tested |
 | Path chosen for the demo | `cloudflared` tunnel |
 
@@ -270,7 +271,9 @@ After the contribution PR is merged and its checks pass, Harry should follow the
 
 Done on physical devices: tunnel access from a phone and a second device, mixed browser + native jobs, a live fault drill with reassignment (run 4), real-key Planner checks, and the contribution-tracking deployment (backend restarted at 19:15 with the tunnel untouched; migration verified).
 
-Still to do: have **two browser devices plus the native laptop** compute at the same time; rehearse the [demo](DEMO.md) three times and record one successful run as a backup video; optionally press *Run baseline* on a `max_iter=20000` job with nothing else running. Trigger the fault drill near one-third progress, roughly 10 seconds after the demo job starts.
+Also done: two browser devices plus the native laptop computing together (run 7, 3 owners, 25.8 s).
+
+Still to do: rehearse the [demo](DEMO.md) three times and record one successful run as a backup video. Trigger the fault drill near one-third progress, roughly 10 seconds after the demo job starts.
 
 ## Safety and limits
 
