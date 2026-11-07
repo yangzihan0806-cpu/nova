@@ -1,3 +1,8 @@
 .env
 .venv/
 __pycache__/
+
+# TartanGrid runtime data and test caches
+*.db
+*.db-*
+.pytest_cache/
