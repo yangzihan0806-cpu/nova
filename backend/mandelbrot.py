@@ -89,6 +89,8 @@ def _tile_loop(x, y, w, h, max_iter, x_min, y_max, dx, dy):
 
 
 if njit is not None:
+    # Cache entries contain the import name; keep script and package imports separate.
+    _tile_loop.__qualname__ = f"{__name__}._tile_loop"
     _tile_loop = njit(nogil=True, cache=True)(_tile_loop)
 
 
