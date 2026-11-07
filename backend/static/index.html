@@ -49,6 +49,28 @@
           <p class="muted small">All-time verified Miter · accepted, spot-checked work</p>
           <ol class="top-contributors" id="top-contributors"><li class="muted">Loading…</li></ol>
         </section>
+        <section class="panel" id="audit-panel" aria-labelledby="audit-title">
+          <div class="panel-head">
+            <h2 id="audit-title">Security audit</h2>
+            <button class="btn" id="audit-lock" type="button" disabled>Lock</button>
+          </div>
+          <p class="muted small">Job submission checks · submitter identities are not verified.</p>
+          <div class="audit-counts">
+            <div><span class="muted small">Allowed</span><strong class="num" id="audit-allowed">—</strong></div>
+            <div><span class="muted small">Blocked</span><strong class="num" id="audit-blocked">—</strong></div>
+          </div>
+          <p class="small" id="audit-status" role="status" aria-live="polite">Locked — enter the audit reader credential to view events.</p>
+          <form id="audit-form" autocomplete="off">
+            <label for="audit-token">Audit reader credential</label>
+            <div class="audit-unlock-row">
+              <input id="audit-token" type="password" required maxlength="256" autocomplete="off" spellcheck="false" aria-describedby="audit-help">
+              <button class="btn" id="audit-unlock" type="submit">Unlock</button>
+            </div>
+            <p class="muted small" id="audit-help">Ask the server operator for access. The credential stays in this page's memory and is forgotten on lock or reload.</p>
+          </form>
+          <p class="muted small" id="audit-scope" hidden>Counts since auditing was enabled on this database. Latest 50 events shown; refreshes every 5 seconds.</p>
+          <ul class="audit-events" id="audit-events" aria-label="Security audit events"></ul>
+        </section>
         <section class="panel">
           <div class="panel-head">
             <h2>Live events</h2>
@@ -73,6 +95,7 @@
   <footer class="site"></footer>
 
   <script src="common.js"></script>
+  <script src="security-audit.js"></script>
   <script>
     "use strict";
     TG.renderChrome("dashboard");
