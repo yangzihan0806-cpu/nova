@@ -14,9 +14,9 @@ The demo job renders a Mandelbrot fractal: every tile is independent, so you can
 | Unit tests (`tests/`) | 91 / 91 pass |
 | Contract smoke test (`scripts/smoke_test.py`) | 12 / 12 pass |
 | End-to-end run (2 browser contributors + 1 native worker, with a crash and a closed tab mid-job) | Passes, in a cloud test environment |
-| Cross-device network at the venue | **Not yet tested** |
+| Cross-device network (`cloudflared` tunnel, phone + laptop) | Works |
 | AI Planner with a real API key | **Not yet tested** (verified only with a stubbed client) |
-| Performance on our own laptops | **Not yet measured**; see [Measured results](#measured-results) |
+| Performance on our own devices | First numbers in [Measured results](#measured-results) |
 
 ## How it works
 
@@ -83,6 +83,8 @@ python -m pip install requests numba
 
 `numba` makes the native worker about 2–3× faster. Without it, the worker falls back to numpy.
 
+**Windows shortcut:** in the repo folder, double-click `tg_setup.bat` once, then `tg_server.bat`, then `tg_tunnel.bat` (it installs `cloudflared` the first time and prints the public address). On a laptop that should also compute, double-click `tg_native.bat` **once**; it starts a single native worker using 2 or 4 slots. `tg_bench.bat` measures native speed. Keep the server, tunnel and native windows open.
+
 ### 2. Start the server (one laptop)
 
 ```bash
@@ -97,7 +99,7 @@ Open <http://localhost:8000> to see the Dashboard.
 In a second terminal on the same laptop:
 
 ```bash
-cloudflared tunnel --url http://localhost:8000
+cloudflared tunnel --url http://127.0.0.1:8000
 ```
 
 It prints a public `https://….trycloudflare.com` address. Use that address on every other device. Install `cloudflared` with `brew install cloudflared` (macOS) or `winget install --id Cloudflare.cloudflared` (Windows). The address changes every time you restart the tunnel.
@@ -110,6 +112,8 @@ It prints a public `https://….trycloudflare.com` address. Use that address on 
   ```bash
   python workers/native_worker.py --server https://<tunnel> --name Native-Harry --slots 2
   ```
+
+  Run **one** native worker per computer (raise `--slots` instead of starting a second copy). On Windows, use `http://127.0.0.1:8000` rather than `localhost` for a local server: `localhost` tries IPv6 first and adds about 2 s to every request. The worker now rewrites `localhost` automatically.
 
   Stop it with **Ctrl-C**. That tells the server the worker is leaving and hands its tiles back right away. Closing the terminal window instead also works, but its tiles then wait for the 10-second lease to run out.
 
@@ -185,7 +189,7 @@ Then try `run this python code: print(1)`, `use all CMU GPUs`, and `width 100000
 
 ## Measured results
 
-**Nothing has been measured on our own devices yet.** Fill this table with real numbers only, even if the speedup is below 1.
+Real numbers only, including the bad ones. Measured on 2026-11-07 with the server, tunnel and native worker all on one Windows laptop (Python 3.14, numba 0.68), plus one phone as a browser contributor reached through the tunnel.
 
 How to measure:
 
@@ -195,9 +199,17 @@ How to measure:
 
 $$\text{Speedup} = \frac{T_{\text{single}}}{T_{\text{distributed}}}$$
 
-| Devices (CPU, OS, browser) | Kernel | Preset / params | T<sub>single</sub> (s) | T<sub>distributed</sub> (s) | Nodes used | Speedup |
-|---|---|---|---|---|---|---|
-| *to be measured* | | | | | | |
+| Run | Preset | Nodes (tiles done) | T<sub>single</sub> | T<sub>distributed</sub> | Speedup |
+|---|---|---|---|---|---|
+| 1 | demo, `max_iter` 8000 | phone 150, laptop native ×2 slots 42 | 57.3 s (laptop browser) | 98.7 s | 0.58× |
+| 2 | demo, `max_iter` 8000 | phone 128, laptop native ×2 copies 64 | 44.3 s (laptop browser) | 71.3 s | 0.62× |
+| 3 | demo, `max_iter` 8000 | laptop native ×4 slots 170, phone 22 | 37.5 s (laptop browser) | **15.2 s** | **2.46×** |
+
+Runs 1–2 were slow because of a Windows bug in our setup, not the scheduler: the native worker connected to `localhost`, and each request waited about 2 s for an IPv6 attempt to fail (each tile needs 2 requests). Switching to `127.0.0.1` fixed it (run 3). Run 2 also accidentally had two native copies on the same laptop.
+
+Single-device reference for the native kernel: `tg_bench.bat` measured 0.24 s per heavy tile and 5.4 × 10<sup>8</sup> iterations/s, which puts the whole job at about **42 s on one core** (an estimate from 8 sample tiles). Most of the run-3 speedup comes from the laptop's 4 native slots running in parallel; the phone did about 11% of the tiles.
+
+After run 3 the `demo` preset was raised to `max_iter` 20000 so that the job runs long enough (target 30–60 s) for the 10-second lease recovery to be visible in the demo. Measure it again and add a row.
 
 **Tuning target** (not a result): on the slowest device each tile should take 0.3–2 s, and the whole demo job should take 30–60 s with all devices, which leaves time to show a failure and recovery. If the `demo` preset is too slow, lower `max_iter` or the resolution in `backend/presets.json`. Keep the 4:3 shape.
 
@@ -205,10 +217,10 @@ $$\text{Speedup} = \frac{T_{\text{single}}}{T_{\text{distributed}}}$$
 
 | Test | Result |
 |---|---|
-| Another device opens the server over the venue Wi-Fi (LAN address) | not tested |
-| Another device opens the `cloudflared` HTTPS address | not tested |
+| Another device opens the server over the venue Wi-Fi (LAN address) | not tested (not needed) |
+| Another device opens the `cloudflared` HTTPS address | **works** (phone joined as a contributor) |
 | Fallback: all devices on one phone hotspot | not tested |
-| Path chosen for the demo | — |
+| Path chosen for the demo | `cloudflared` tunnel |
 
 Prefer the tunnel: it gives HTTPS and lets phones join. Fall back to LAN, then to a hotspot.
 

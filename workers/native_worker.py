@@ -10,6 +10,7 @@ import random
 import sys
 import threading
 import time
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -35,6 +36,14 @@ class NativeWorker:
     def __init__(self, args):
         self.args = args
         self.server = args.server.rstrip("/")
+        # On Windows, "localhost" tries IPv6 (::1) first; uvicorn listens on IPv4 only and
+        # Windows takes ~2 s to refuse each new connection, adding ~4 s per tile
+        # (one lease + one complete). Measured on a team laptop. Use 127.0.0.1 instead.
+        parts = urlsplit(self.server)
+        if parts.hostname == "localhost":
+            netloc = "127.0.0.1" + (f":{parts.port}" if parts.port else "")
+            self.server = urlunsplit(parts._replace(netloc=netloc))
+            log(f"Using {self.server} instead of localhost (avoids a ~2 s IPv6 delay per request)")
         self.stop = threading.Event()
         self.registration_lock = threading.Lock()
         self.task_lock = threading.Lock()

@@ -3,6 +3,6 @@
    "params": {"width": 512, "height": 384, "tile_size": 64, "max_iter": 256,
               "x_min": -2.2, "x_max": 1.0, "y_min": -1.2, "y_max": 1.2}},
   {"id": "demo", "label": "Demo — Seahorse Valley (heavy)",
-   "params": {"width": 2048, "height": 1536, "tile_size": 128, "max_iter": 8000,
+   "params": {"width": 2048, "height": 1536, "tile_size": 128, "max_iter": 20000,
               "x_min": -0.8, "x_max": -0.7, "y_min": 0.05, "y_max": 0.125}}
 ]
