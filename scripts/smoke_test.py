@@ -318,16 +318,28 @@ class Smoke:
         require(self.worker_action(self.w2, "pause").get("ok") is True, "pause was not acknowledged")
         self.worker_action(self.w2, "lease", 204)
         require(self.worker_action(self.w2, "resume").get("ok") is True, "resume was not acknowledged")
-        self.resumed = self.lease(self.w2)
-        require(self.resumed is not None and self.resumed["job_id"] == self.bad_job,
+        third = self.lease(self.w2)
+        require(third is not None and third["job_id"] == self.bad_job,
                 "resume did not permit a new lease; use TG_MAX_ATTEMPTS=3 or higher")
+        # Finish the rejection-test job with a valid result (max_iter=1 -> every pixel is 1),
+        # so the disconnect check below uses a task that still has attempts left.
+        # (The backend fails a *pending* task whose attempts are exhausted — CONTRACT-NOTE
+        # in scheduler._reap — so releasing a 3rd-attempt task would correctly end as failed.)
+        size = third["input"]["tile_w"] * third["input"]["tile_h"]
+        self.completion(self.w2, third, [1] * size, expected=200)
+        params = {**self.quick, "width": 64, "height": 64, "max_iter": 1}
+        self.release_job = self.request("POST", "/api/jobs",
+                                        body={"task_type": "mandelbrot_v1", "params": params})["job_id"]
+        self.resumed = self.lease(self.w2)
+        require(self.resumed is not None and self.resumed["job_id"] == self.release_job,
+                "could not lease the disconnect-test task")
 
     def stage11(self):
-        before = self.detail(self.bad_job)["counts"]
+        before = self.detail(self.release_job)["counts"]
         require(before["leased"] == 1, "lease expired before disconnect; rerun with a larger server TTL")
         require(self.worker_action(self.w2, "disconnect").get("ok") is True, "disconnect was not acknowledged")
         self.disconnected.add(self.w2["worker_id"])
-        after = self.detail(self.bad_job)["counts"]
+        after = self.detail(self.release_job)["counts"]
         require(after["leased"] == before["leased"] - 1 and after["pending"] == before["pending"] + 1,
                 "disconnect did not immediately return the held task to pending")
 

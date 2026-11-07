@@ -13,7 +13,7 @@ TartanGrid 的目标是把贡献者主动授权的浏览器和个人电脑连接
 | `scripts/smoke_test.py` | 独立 HTTP 假 worker 的契约检查 | A 的真实 API、C 的 `compute_tile` / `split_inputs` |
 | `backend/requirements.txt` | 仅 D 允许追加的 `anthropic` | **不是完整后端依赖表**；与 A 的依赖合并时仅追加这一行 |
 | `README.md` / `DEMO.md` | 操作手册、阶段验收、3 分钟剧本 | 现场网络、测量、彩排和视频均需真实执行 |
-| `CONTRACT.md` | 保留上传的 v1.0 原文 | 不单方面修改共享接口或版本 |
+| `CONTRACT.md` | v1.1（Planner 支持 OpenRouter；明确用完次数的 task 判 failed） | 不单方面修改共享接口或版本 |
 
 测试替身只用于验证 D 代码的分支和请求流程；它通过测试，不等于真实后端 smoke test 或真实设备验收通过。性能表只记录实际测量，不从架构文档复制参考数字。
 
@@ -75,9 +75,9 @@ A 需要提供 `backend/main.py`、`schemas.py`、调度器、数据库和完整
 
 ## TartanGrid Quick start（A/B/C 合入后）
 
-目前 D 包不能单独启动以下服务。合入前由 A 确认完整 `backend/requirements.txt` 包含 FastAPI、uvicorn、Pydantic v2、numpy 等既定依赖，并保留 D 的 `anthropic` 行。smoke test 和 native worker 使用 `requests`；C 的可选 numba 依赖由 C 提供。根目录现有的 `requirements.txt` 是聊天原型依赖，不替代后端依赖。
+A/B/C/D 已全部合入 `main`，以下命令可直接使用。smoke test 和 native worker 额外需要 `requests`；native 机器请同时安装 `numba`（没有它会退回 numpy，速度约慢 2–3 倍）。根目录现有的 `requirements.txt` 是聊天原型依赖，不替代后端依赖。
 
-另外，现有 `.gitignore` 尚无 `*.db`。请由 A 在创建数据库或暂存运行产物前补上该项；`.env` 已忽略。不要提交数据库、令牌或运行日志中的凭据。
+`.gitignore` 已忽略 `*.db` 和 `.env`。不要提交数据库、令牌或运行日志中的凭据。
 
 以下命令从仓库根目录开始，要求 Python ≥ 3.10。已经创建 `.venv` 时跳过第一行：
 
@@ -85,7 +85,7 @@ A 需要提供 `backend/main.py`、`schemas.py`、调度器、数据库和完整
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r backend/requirements.txt
-python -m pip install requests
+python -m pip install requests numba
 cd backend
 python -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
@@ -171,7 +171,7 @@ python scripts/smoke_test.py --server http://localhost:8000
 
 ## AI Planner 验证
 
-Planner 默认使用 **Anthropic**；原聊天原型的 OpenRouter key 不能直接用于它。`TG_PLANNER_MODEL` 默认 `claude-haiku-5-5`，须以账户实际支持的模型为准。Planner 从进程环境读取 `ANTHROPIC_API_KEY`，不会自动加载原型的 `.env`。在本机私密环境或运行平台的 secret 设置中注入，不要把 key 写进命令截图或提交到 Git。
+Planner 优先使用 **Anthropic**（`ANTHROPIC_API_KEY`，模型 `TG_PLANNER_MODEL`，默认 `claude-haiku-5-5`）；没有 Anthropic key 时改用主办方发的 **OpenRouter** key：直接复用仓库根目录 `.env` 里的 `OPENROUTER_API_KEY` 和 `OPENROUTER_MODEL`（默认 `openai/gpt-4o`），Planner 会自动读取这个 `.env`。在本机私密环境或运行平台的 secret 设置中注入，不要把 key 写进命令截图或提交到 Git。
 
 A 需在 `backend/main.py` 挂载 D 的 router（契约 §6.13）：
 

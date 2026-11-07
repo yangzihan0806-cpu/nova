@@ -22,7 +22,7 @@
 - [ ] 两个浏览器节点和一个 native 节点真实上线，名称对应物理设备；没有测试 worker 冒充设备。
 - [ ] `demo` 在当前设备组合经过实测调优：最慢设备单 tile 目标 `0.3–2` 秒、全 job 目标 `30–60` 秒。目标不等于当前测量结果。
 - [ ] 同参数单机基线已在登台前测量；重型基线不占用 3 分钟现场时段。记录硬件、backend、预热及网络开销口径。
-- [ ] 有 key 时实测 Planner；另在无 key 状态验证 `503` 后手动表单仍可提交任务。确认 `ANTHROPIC_API_KEY` 与聊天原型 `OPENROUTER_API_KEY` 不混用。
+- [ ] 有 key 时实测 Planner；另在无 key 状态验证 `503` 后手动表单仍可提交任务。没有 Anthropic key 时，Planner 会自动使用根目录 `.env` 里的 `OPENROUTER_API_KEY`。
 - [ ] 完整走三遍故障流程：真实节点持有 lease → 退出 / 崩溃 → `lease_expired` → 其他节点完成 → 图像完整。
 - [ ] 录下一次成功运行；确认本机视频可以离线播放、文件存在且无 key、worker token 或内部 IP。没有视频时不能声称已备妥。
 - [ ] 投屏关闭终端密钥、`.env`、注册响应与私人窗口；Dashboard 数字全部来自真实 API。

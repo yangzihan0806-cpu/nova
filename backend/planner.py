@@ -28,28 +28,59 @@ class PlannerReq(BaseModel):
     prompt: str = Field(min_length=1, max_length=500)
 
 
+def _load_dotenv() -> None:
+    """Load the repo-root .env (the NOVA starter keeps OPENROUTER_API_KEY there).
+
+    Real environment variables win; a missing python-dotenv is not an error.
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+
+
 def call_llm(system: str, user: str) -> str:
     """Return provider text; keep credentials and provider errors off the API.
 
-    Import lazily so an absent optional SDK does not disable normal job forms.
+    Provider order: ANTHROPIC_API_KEY (CONTRACT §1), else OPENROUTER_API_KEY
+    (the key NOVA organizers hand out; model from OPENROUTER_MODEL). SDKs are
+    imported lazily so an absent optional SDK does not disable normal job forms.
     Provider retries are disabled: only invalid *output* is retried by plan().
     """
-    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not key:
+    _load_dotenv()
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if openrouter_key.startswith("sk-or-v1-paste"):   # untouched .env.example placeholder
+        openrouter_key = ""
+    if not anthropic_key and not openrouter_key:
         raise HTTPException(status_code=503, detail="planner_unavailable")
     try:
-        import anthropic
+        if anthropic_key:
+            import anthropic
 
-        with anthropic.Anthropic(api_key=key, timeout=15.0, max_retries=0) as client:
-            message = client.messages.create(
-                model=os.environ.get("TG_PLANNER_MODEL", "claude-haiku-5-5"),
-                max_tokens=600,
-                system=system,
-                messages=[{"role": "user", "content": user}],
+            with anthropic.Anthropic(api_key=anthropic_key, timeout=15.0, max_retries=0) as client:
+                message = client.messages.create(
+                    model=os.environ.get("TG_PLANNER_MODEL", "claude-haiku-5-5"),
+                    max_tokens=600,
+                    system=system,
+                    messages=[{"role": "user", "content": user}],
+                )
+            return "".join(
+                block.text for block in message.content if block.type == "text"
             )
-        return "".join(
-            block.text for block in message.content if block.type == "text"
+
+        from openai import OpenAI
+
+        client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=openrouter_key,
+                        timeout=15.0, max_retries=0)
+        completion = client.chat.completions.create(
+            model=os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o"),
+            max_tokens=600,
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": user}],
         )
+        return completion.choices[0].message.content or ""
     except Exception:
         # Includes ImportError, timeout and API failures. Never return their
         # messages, which can contain credentials or provider request details.
