@@ -75,7 +75,7 @@ A 需要提供 `backend/main.py`、`schemas.py`、调度器、数据库和完整
 
 ## TartanGrid Quick start（A/B/C 合入后）
 
-目前 D 包不能单独启动以下服务。合入前由 A 确认完整 `backend/requirements.txt` 包含 FastAPI、uvicorn、Pydantic v2、numpy 等既定依赖，并保留 D 的 `anthropic` 行。smoke test 和 native worker 使用 `requests`；C 的可选 numba 依赖由 C 提供。根目录现有的 `requirements.txt` 是聊天原型依赖，不替代后端依赖。
+A/B/C/D 已全部合入 `main`，以下命令可直接使用。smoke test 和 native worker 额外需要 `requests`；native 机器请同时安装 `numba`（没有它会退回 numpy，速度约慢 2–3 倍）。根目录现有的 `requirements.txt` 是聊天原型依赖，不替代后端依赖。
 
 另外，现有 `.gitignore` 尚无 `*.db`。请由 A 在创建数据库或暂存运行产物前补上该项；`.env` 已忽略。不要提交数据库、令牌或运行日志中的凭据。
 
@@ -85,7 +85,7 @@ A 需要提供 `backend/main.py`、`schemas.py`、调度器、数据库和完整
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r backend/requirements.txt
-python -m pip install requests
+python -m pip install requests numba
 cd backend
 python -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
