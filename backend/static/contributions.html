@@ -34,6 +34,8 @@
           <button class="btn" type="submit" id="apply-range">Apply range</button>
         </div>
       </form>
+      <label class="check" style="margin-top:12px"><input type="checkbox" id="owned-only" checked> Only show devices with an owner</label>
+      <p class="muted small" id="hidden-note" hidden></p>
       <p class="muted small">The range includes results accepted at either boundary. Leave one custom boundary blank for an open range.
         Device registrations and online time cover all time.</p>
       <div class="note err small" id="filter-error" role="alert" hidden></div>
@@ -70,7 +72,13 @@
     const el = TG.el;
     const range = TG.$("#range"), since = TG.$("#since"), until = TG.$("#until");
     const csv = TG.$("#download-csv"), filterError = TG.$("#filter-error"), status = TG.$("#refresh-status");
-    let applied = { mode: "all" }, sequence = 0, inFlight = false, dirty = false, loaded = false;
+    let applied = { mode: "all" }, sequence = 0, inFlight = false, dirty = false, loaded = false, lastData = null;
+    const ownedOnly = TG.$("#owned-only");
+    try { if (localStorage.getItem("tg_owned_only") === "0") ownedOnly.checked = false; } catch (_) {}
+    ownedOnly.addEventListener("change", () => {
+      try { localStorage.setItem("tg_owned_only", ownedOnly.checked ? "1" : "0"); } catch (_) {}
+      if (lastData) render(lastData);
+    });
 
     function setDownloadEnabled(enabled) {
       csv.setAttribute("aria-disabled", String(!enabled));
@@ -126,7 +134,14 @@
     until.addEventListener("input", markDirty);
     TG.$("#range-form").addEventListener("submit", (event) => { event.preventDefault(); applyFilters(); });
 
-    function render(data) {
+    function render(raw) {
+      lastData = raw;
+      const data = ownedOnly.checked ? TG.ownedOnly(raw) : raw;
+      const note = TG.$("#hidden-note");
+      note.hidden = !(ownedOnly.checked && data.hidden > 0);
+      note.textContent = ownedOnly.checked && data.hidden > 0
+        ? data.hidden + " device" + (data.hidden === 1 ? "" : "s") + " without an owner hidden (mostly sessions from before owner labels existed). Their data is kept; untick to show them. Shares are relative to the devices shown."
+        : "";
       TG.$("#total-devices").textContent = TG.fmtInt(data.totals.devices);
       TG.$("#total-tiles").textContent = TG.fmtInt(data.totals.tiles_done);
       TG.$("#total-miter").textContent = TG.fmtMiter(data.totals.verified_miter);
@@ -152,7 +167,9 @@
             el("div", { class: "muted small" }, "Compute " + TG.fmtSeconds(d.compute_ms)))));
       });
       TG.$("#contribution-rows").replaceChildren(...(rows.length ? rows :
-        [el("tr", null, el("td", { colspan: 8, class: "empty" }, "No devices registered yet. Open Contribute to join."))]));
+        [el("tr", null, el("td", { colspan: 8, class: "empty" }, ownedOnly.checked && data.hidden
+          ? "No devices with an owner yet. Add an owner on the Contribute page, or untick the filter."
+          : "No devices registered yet. Open Contribute to join."))]));
     }
     async function refresh() {
       const request = ++sequence;
@@ -179,6 +196,17 @@
     }
     csv.addEventListener("click", async (event) => {
       if (csv.getAttribute("aria-disabled") === "true") { event.preventDefault(); return; }
+      if (ownedOnly.checked && lastData) {
+        // Filtered export, same columns as the server CSV (shares relative to shown devices).
+        event.preventDefault();
+        const url = URL.createObjectURL(new Blob([TG.contributionsCSV(TG.ownedOnly(lastData))], { type: "text/csv;charset=utf-8" }));
+        const download = el("a", { href: url, download: "tartangrid_contributions_owned.csv" });
+        document.body.appendChild(download);
+        download.click();
+        download.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        return;
+      }
       if (!TG.MOCK) return;
       event.preventDefault();
       // Mock exports use the same filtered API simulation instead of a live backend.
