@@ -6,3 +6,6 @@ __pycache__/
 *.db
 *.db-*
 .pytest_cache/
+
+# Windows helper logs
+tg_tunnel.log
