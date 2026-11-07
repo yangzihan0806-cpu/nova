@@ -1,4 +1,6 @@
-# TartanGrid 工程契约（CONTRACT v1.2）
+# TartanGrid 工程契约（CONTRACT v1.3）
+
+> v1.3（2026-11-07）：新增任务提交审计与受保护的日志读取（§6.17），提交响应增加 `X-Request-ID`。这是审计增量；提交者认证、用户配额及 GPU 授权尚未实现，现有提交请求体、Worker 与贡献统计协议保持不变。
 
 > v1.2（2026-11-07）：按随机 `device_id` 汇总接受结果的迭代积分；新增选填 `owner`、无损 schema 迁移、贡献 JSON / CSV（§5、§6.1、§6.4、§6.15–16、§9）；`TG_SPOT_CHECKS` 默认改为 8。按团队 TODO 的已定增量更新，既有 lease / retry 语义不变。
 
@@ -478,6 +480,38 @@ device_id,display_name,owner,worker_types,workers,tiles_done,verified_miter,shar
 `worker_types` 用 `;` 分隔，null owner 导出为空字段；逗号、引号、换行使用标准 CSV quoting。响应头 `Content-Disposition: attachment; filename="tartangrid_contributions.csv"`。
 
 `display_name` / `owner` 去掉前导空白后若以 `= + - @` 开头，或原值以 tab / CR / LF 开头，CSV 在原值前加一个单引号，防止表格软件按公式执行。JSON 和数据库保留原值；计数字段仍为数字。mock 导出采用同样规则。
+
+### 6.17 任务提交审计与 `GET /api/security/events?limit=50`
+
+本增量记录现有 `POST /api/jobs` 校验的真实结果，不新增用户授权或配额策略。默认提交仍是匿名的；`owner`、Worker token、客户端身份/request ID header 都不作为用户身份。所有审计事件 `actor_id="anonymous"`、`action="submit_job"`。
+
+- 每次成功提交在创建 Job / Task 的**同一事务**插入一条 `allowed` 审计；已有 schema 拒绝（含 malformed JSON）和现有活跃 Job 上限拒绝分别记录一条 `denied`。其他 API、历史 Job 和内部调度调用不伪造提交审计。
+- 返回服务器生成的 `X-Request-ID: req_<24 hex>`，与审计记录对应；请求方传入同名 header 不被采信。成功/422/429 的既有响应体保持不变。
+- 新表 `security_events` 使用自增 id、UTC 时间、唯一 request_id、decision、reason_code、固定说明 details、可空 job_id；启动 `CREATE TABLE IF NOT EXISTS` 保留已有任务、贡献和日志。允许/拒绝事件都持久化到同一个 `TG_DB_PATH`。
+- 只存固定脱敏说明；不存请求体、prompt、header、IP、名字、owner、访问凭据或模型密钥。审计不提供不可篡改性或经过认证的操作者归因。
+- 成功提交的审计写入失败时，Job/Task 一并回滚，返回 `503 {"detail":"security_events_unavailable"}`；拒绝审计写入失败也返回 503，不放行任务。这是新增的存储故障行为，不能将未记录的请求显示为已审计。
+
+读取必须携带 `Authorization: Bearer <audit-reader-token>`。凭据由服务器环境变量 `TG_SECURITY_AUDIT_TOKEN` 设置，必须是 32–256 个 URL-safe 字符 `[A-Za-z0-9_-]`，建议 `secrets.token_urlsafe(32)`；不是 Worker token、OpenRouter key 或提交权限。无配置/配置非法返回 503，缺失/错误凭据返回 `401 {"detail":"audit_auth_required"}`，带 `WWW-Authenticate: Bearer`。查询失败返回 503。读取响应（含错误）使用 `Cache-Control: private, no-store`；凭据只放 header，不放 URL。
+
+`limit` 为 1–100，默认 50，越界/非整数返回 422。按事件自增 id 倒序；totals 统计**该数据库自启用审计以来的全部事件**，不受 limit 影响。无事件且读取成功时计数为 0。
+
+```json
+{
+  "generated_at": "2026-11-07T20:00:00.000Z",
+  "scope": "since_audit_enabled",
+  "totals": {"allowed": 1, "blocked": 0},
+  "events": [{
+    "event_id": "evt_1", "timestamp": "2026-11-07T19:59:00.000Z",
+    "request_id": "req_0123456789abcdef01234567", "actor_id": "anonymous",
+    "action": "submit_job", "decision": "allowed", "reason_code": "SUBMISSION_ACCEPTED",
+    "details": "Existing submission checks passed; job created.", "job_id": "job_123abc"
+  }]
+}
+```
+
+示例不是实测。reason_code：成功 `SUBMISSION_ACCEPTED`；未知任务类型 `UNAPPROVED_WORKLOAD`；其他 schema 错误 `INVALID_TASK_PARAMS`；现有全局并发限制 `ACTIVE_JOB_LIMIT`；其他提交 4xx `SUBMISSION_REJECTED`。denied 的 job_id 为 null。
+
+Dashboard 面板默认锁定，凭据仅保留当前页面内存，锁定/刷新/导航后清除；每 5 秒读取，失败显示 `Security events unavailable` 并清除旧列表/计数，不伪造零事件。mock 模式明确标注不能作为安全证据。
 
 ---
 

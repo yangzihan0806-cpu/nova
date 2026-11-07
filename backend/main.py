@@ -56,8 +56,17 @@ def validation_error(request, exc):
     # as JSON numbers (otherwise the intended 422 becomes a serialization 500).
     request_id = getattr(request.state, 'audit_request_id', None)
     headers = {'X-Request-ID': request_id} if request_id else {}
-    return JSONResponse(status_code=422, content={'detail': _finite_json(jsonable_encoder(exc.errors()))},
-                        headers=headers)
+    if request.url.path == '/api/security/events':
+        headers.update(security_audit.NO_STORE)
+    try:
+        return JSONResponse(status_code=422, content={'detail': _finite_json(jsonable_encoder(exc.errors()))},
+                            headers=headers)
+    except (UnicodeError, RecursionError):
+        # Invalid text and deeply nested input can break error serialization too.
+        # Preserve rejection/correlation without echoing unrepresentable input.
+        return JSONResponse(status_code=422, content={'detail': [{
+            'type': 'value_error', 'loc': ['body'], 'msg': 'Invalid request body',
+        }]}, headers=headers)
 
 
 def require_worker(worker_id, authorization):

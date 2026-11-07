@@ -1,7 +1,6 @@
 """Exercise submission audit boundaries with real HTTP routing and temporary SQLite."""
 import json
 import re
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -23,7 +22,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv('TG_RESET_DB', '0')
     monkeypatch.setenv('TG_SECURITY_AUDIT_TOKEN', TOKEN)
     from main import app
-    with TestClient(app) as c:
+    with TestClient(app, raise_server_exceptions=False) as c:
         yield c
 
 
@@ -114,6 +113,36 @@ def test_malformed_json_and_nonfinite_values_are_audited(client, raw):
     assert 'private-secret' not in json.dumps(data)
 
 
+def test_framework_body_parse_failure_is_also_audited(client):
+    response = client.post('/api/jobs', content=b'\xff', headers={'Content-Type': 'application/json'})
+    assert response.status_code == 400 and snapshot() == (0, 0)
+    data = audit(client)
+    assert data['totals'] == {'allowed': 0, 'blocked': 1}
+    assert data['events'][0]['request_id'] == response.headers['x-request-id']
+
+
+@pytest.mark.parametrize('body,content_type', [
+    (b'\xff', 'text/plain'),
+    (b'{"x":"\\ud800"}', 'application/json'),
+])
+def test_invalid_text_in_validation_errors_keeps_422_and_audit_correlation(client, body, content_type):
+    response = client.post('/api/jobs', content=body, headers={'Content-Type': content_type})
+    assert response.status_code == 422 and snapshot() == (0, 0)
+    assert 'detail' in response.json()
+    data = audit(client)
+    assert data['totals'] == {'allowed': 0, 'blocked': 1}
+    assert data['events'][0]['request_id'] == response.headers['x-request-id']
+
+
+def test_deep_validation_input_preserves_rejection_and_request_id(client):
+    response = client.post('/api/jobs', content=b'[' * 1001 + b']' * 1001,
+                           headers={'Content-Type': 'application/json'})
+    assert response.status_code in (400, 422) and snapshot() == (0, 0)
+    data = audit(client)
+    assert data['totals'] == {'allowed': 0, 'blocked': 1}
+    assert data['events'][0]['request_id'] == response.headers['x-request-id']
+
+
 def test_active_limit_records_denial_and_counts_include_rows_outside_page(client):
     assert client.post('/api/jobs', json=JOB).status_code == 200
     assert client.post('/api/jobs', json=JOB).status_code == 200
@@ -141,7 +170,9 @@ def test_events_persist_across_repeated_initialization_and_ids_are_unique(client
 
 @pytest.mark.parametrize('limit', ['0', '101', '-1', 'bad'])
 def test_audit_page_limit_is_bounded(client, limit):
-    assert client.get('/api/security/events', headers=AUTH, params={'limit': limit}).status_code == 422
+    response = client.get('/api/security/events', headers=AUTH, params={'limit': limit})
+    assert response.status_code == 422
+    assert 'no-store' in response.headers['cache-control']
 
 
 def test_audit_failure_rolls_back_job_and_all_its_tasks(client):

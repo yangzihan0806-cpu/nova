@@ -1,6 +1,18 @@
 # TartanGrid · 3 分 15 秒演示脚本
 
-这是按架构文档 §13 准备的**待彩排脚本**。团队已报告 Windows native + 手机浏览器通过 tunnel 完成 `demo max_iter=20000`：31.8 秒，native 181 块、手机 11 块，1 次过期重派，0 failed。第二台真实浏览器笔记本与同参数 T_single **仍未测量**；云端测试上下文不能代替真机验收。下列完整彩排、真实模型现场检查与备用视频仍须逐项记录。实测数字填入 [README.md](README.md) 的 “Measured results”，未测时不宣称加速倍数。
+这是按架构文档 §13 准备的**待彩排脚本**。最新真机结果、设备与 baseline 口径以 [README.md](README.md) 的 “Measured results” 为准，包括已记录的 run 7 三设备计算。云端测试上下文不能代替真机验收；下列完整彩排与备用视频仍须逐项记录。
+
+## 可选安全审计演示（约 60 秒）
+
+本增量展示**现有提交检查的审计证据**，不宣称已完成用户认证、按用户配额、GPU 授权或完整 Sandia P0。由服务器操作者按 README 配置专用 `TG_SECURITY_AUDIT_TOKEN`，仅在本功能合入并完成部署后展示。
+
+1. 在 Dashboard 的 Security audit 卡片私下粘贴凭据并 Unlock；输入框会清空，凭据只保留当前页面内存。不要在投屏中显示配置命令的结果或凭据。
+2. 正常提交一个 Quick 任务：出现真实 Allowed 事件、请求 ID、任务链接；原 Worker 网络完成图像。
+3. 从已准备的 API 客户端提交 `{"task_type":"arbitrary_python","params":{"command":"echo should_not_execute"}}` 到 `/api/jobs`。它只是非法 JSON 请求中的文本，不执行命令。应返回 422 和 `X-Request-ID`，面板出现同一 ID 的 Blocked / `UNAPPROVED_WORKLOAD`，Job 数不增加。
+4. 说明“这证明现有后端白名单在直接 API 调用下仍有效，而且拒绝留有真实证据”；不能说它证明用户已认证或防御所有提示词攻击。凭据只控制审计读取。
+5. 点击 Lock，列表和计数清除；API 不可用时显示 unavailable，而不是零事件。演示结束后清除用于粘贴的剪贴板内容。
+
+自动化演练用 `scripts/security_demo.py`，仅限自己的全新临时数据库和 loopback 服务；不要把它指向现场演示服务。它会创建一个小任务并实际计算，预期 7/7 PASS。
 
 ## 角色与设备
 

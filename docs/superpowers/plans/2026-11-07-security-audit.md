@@ -24,21 +24,21 @@
 ### Task 1: Persistent audit and protected API
 **Files:** backend/security_audit.py (new), backend/db.py, backend/main.py, backend/scheduler.py, tests/test_security_audit.py (new).
 **Interfaces:** record(conn, request_id, decision, reason_code, now, job_id=None); record_denied(request_id, reason_code); events(limit); AuditedJobRoute; scheduler.create_job(params, now, audit_request_id=None). Response: {generated_at, scope:'since_audit_enabled', totals:{allowed,blocked}, events:[{event_id,timestamp,request_id,actor_id,action,decision,reason_code,details,job_id}]}.
-- [ ] Write HTTP/database tests for reader auth, exact redacted success/failure events, unique IDs, malformed JSON, quota rejection, restart/counts, atomic rollback and unchanged worker completion.
-- [ ] Run tests against baseline and observe missing-feature failures.
-- [ ] Implement schema, scoped route wrapper, transactional recording and protected no-store endpoint.
-- [ ] Run security tests and full provider-free pytest suite; commit backend implementation.
+- [x] Write HTTP/database tests for reader auth, exact redacted success/failure events, unique IDs, malformed JSON, quota rejection, restart/counts, atomic rollback and unchanged worker completion.
+- [x] Run tests against baseline and observe missing-feature failures.
+- [x] Implement schema, scoped route wrapper, transactional recording and protected no-store endpoint.
+- [x] Run security tests and full provider-free pytest suite; commit backend implementation.
 
 ### Task 2: Dashboard panel and browser verification
 **Files:** backend/static/security-audit.js (new), index.html, style.css; scripts/check_security_audit_ui.js (new browser acceptance script).
 **Interfaces:** protected API from Task 1, dedicated fetch Authorization header; no TG.api credential changes. UI IDs prefixed audit-.
-- [ ] Write browser scenarios for initial lock, real events/counters, credential rejection, lock/stale responses, error/retry, mock and mobile; observe baseline failure.
-- [ ] Implement password-input unlock, in-memory credential, five-second polling, safe event rendering and independent error state.
-- [ ] Run browser scenarios and capture desktop/mobile evidence; commit frontend.
+- [x] Write browser scenarios for initial lock, real events/counters, credential rejection, lock/stale responses, error/retry, mock and mobile; observe baseline failure.
+- [x] Implement password-input unlock, in-memory credential, five-second polling, safe event rendering and independent error state.
+- [x] Run browser scenarios and capture desktop/mobile evidence; commit frontend.
 
 ### Task 3: Handoff, integration and review
 **Files:** CONTRACT.md, README.md, DEMO.md; scripts/security_demo.py (new).
-- [ ] Add disposable-server demo that checks accepted/rejected requests, redaction and no jobs/tasks from denied requests.
-- [ ] Document token setup, audit-only scope, lifetime counts, storage-failure behavior, deployment and tests; preserve latest field measurements.
-- [ ] Run demo + existing 13-stage smoke on fresh loopback databases; actual browser worker computes accepted task; run Python/Node/whitespace checks.
+- [x] Add disposable-server demo that checks accepted/rejected requests, redaction and no jobs/tasks from denied requests.
+- [x] Document token setup, audit-only scope, lifetime counts, storage-failure behavior, deployment and tests; preserve latest field measurements.
+- [x] Run demo + existing 13-stage smoke on fresh loopback databases; actual browser worker computes accepted task; run Python/Node/whitespace checks.
 - [ ] Request fresh whole-branch review, fix important findings with regression tests, commit and create PR. Do not merge or deploy.

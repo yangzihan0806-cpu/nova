@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import db
 
@@ -60,9 +61,10 @@ class AuditedJobRoute(APIRoute):
                     reason = 'UNAPPROVED_WORKLOAD' if unapproved else 'INVALID_TASK_PARAMS'
                     await run_in_threadpool(record_denied, request_id, reason)
                     raise
-                except HTTPException as exc:
+                except StarletteHTTPException as exc:
                     if 400 <= exc.status_code < 500:
-                        reason = 'ACTIVE_JOB_LIMIT' if exc.status_code == 429 else 'SUBMISSION_REJECTED'
+                        reason = {400: 'INVALID_TASK_PARAMS', 422: 'INVALID_TASK_PARAMS',
+                                  429: 'ACTIVE_JOB_LIMIT'}.get(exc.status_code, 'SUBMISSION_REJECTED')
                         await run_in_threadpool(record_denied, request_id, reason)
                     exc.headers = (exc.headers or {}) | {'X-Request-ID': request_id}
                     raise
