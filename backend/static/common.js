@@ -200,6 +200,16 @@
 
   TG.fmtSeconds = (ms) => (ms == null || !isFinite(ms) ? "—" : (ms / 1000).toFixed(1) + " s");
   TG.fmtInt = (n) => (n == null ? "—" : Number(n).toLocaleString());
+  TG.fmtMiter = (n) => (n == null ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: 6 }));
+  TG.fmtDuration = function (seconds) {
+    if (seconds == null || !Number.isFinite(Number(seconds))) return "—";
+    const s = Math.max(0, Math.floor(Number(seconds)));
+    if (s < 60) return s + "s";
+    if (s < 3600) return Math.floor(s / 60) + "m " + (s % 60) + "s";
+    return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
+  };
+  TG.rankContributions = (devices) => (devices || []).slice().sort((a, b) =>
+    b.verified_miter - a.verified_miter || String(a.device_id).localeCompare(String(b.device_id)));
 
   // ---------------------------------------------------------------- DOM ----
 
@@ -232,7 +242,7 @@
 
   TG.workerDot = (id) => TG.el("span", { class: "dot", style: { background: TG.workerColor(id) } });
 
-  /** Header navigation + footer. `active` is one of: dashboard | new | contribute | job. */
+  /** Shared header navigation + footer. */
   TG.renderChrome = function (active) {
     const header = TG.$("header.site");
     if (header) {
@@ -242,7 +252,8 @@
         TG.el("nav", null,
           navLink("/", "Dashboard", active === "dashboard"),
           navLink("/new.html", "New Job", active === "new"),
-          navLink("/contribute.html", "Contribute", active === "contribute")),
+          navLink("/contribute.html", "Contribute", active === "contribute"),
+          navLink("/contributions.html", "Contributions", active === "contributions")),
         TG.MOCK ? TG.el("span", { class: "mock-badge", title: "Simulated data — ?mock=1" }, "MOCK DATA") : null,
       ].filter(Boolean)); // replaceChildren(null) would insert the text "null"
     }
@@ -402,6 +413,7 @@
     }
     function addWorker(ts, name, type, slots, crashAfter) {
       const w = { id: "wkr_" + (0x1a2b3c00 + workers.length).toString(16), name, worker_type: type, slots,
+        device_id: "dev_" + (workers.length + 1).toString(16).padStart(16, "0"), owner: null,
         paused: false, disconnected: false, offline_notified: false, last_heartbeat: ts, registered_at: ts,
         tasks_done: 0, crashAt: Infinity, crashAfter: crashAfter || Infinity };
       workers.push(w);
@@ -459,7 +471,8 @@
           if (t.status !== "leased" || t.finish_at > ts) continue;
           const w = wById(t.worker_id);
           if (!w || !alive(w, t.finish_at)) continue; // crashed worker never reports
-          t.status = "done"; t.done_by = w.id; t.runtime_ms = Math.round((t.finish_at - t.leased_at) * 1000);
+          t.status = "done"; t.done_by = w.id; t.done_at = ts;
+          t.runtime_ms = Math.round((t.finish_at - t.leased_at) * 1000);
           t.data = Array.from(mockKernel(t.input));
           t.done_seq = ev(ts, "task_done", `Task ${t.id} done by ${w.name} in ${(t.runtime_ms / 1000).toFixed(2)}s`,
             { job_id: job.id, task_id: t.id, worker_id: w.id });
@@ -549,6 +562,60 @@
       for (const t of job.tasks) c[t.status]++;
       return c;
     }
+    function contributions(q, now) {
+      const bounds = {};
+      for (const key of ["since", "until"]) {
+        if (!q.has(key)) continue;
+        const raw = q.get(key);
+        const value = Date.parse(raw);
+        if (!/(Z|[+-]\d{2}:\d{2})$/i.test(raw) || !Number.isFinite(value)) http(422, key + " must be an ISO datetime with a timezone");
+        bounds[key] = value / 1000;
+      }
+      if (bounds.since > bounds.until) http(422, "since must not be after until");
+      const groups = new Map();
+      for (const w of workers) {
+        const id = w.device_id || "wkr:" + w.id;
+        let d = groups.get(id);
+        if (!d) {
+          d = { device_id: id, display_name: w.name, owner: w.owner, worker_types: [], workers: 0,
+            tiles_done: 0, verified_miter: 0, share: 0, compute_ms: 0, online_s: 0,
+            first_seen: iso(w.registered_at), last_seen: iso(w.last_heartbeat), iterations: 0, latest: -Infinity };
+          groups.set(id, d);
+        }
+        if (w.registered_at >= d.latest) { d.display_name = w.name; d.owner = w.owner; d.latest = w.registered_at; }
+        d.worker_types = [...new Set([...d.worker_types, w.worker_type])].sort();
+        d.workers++;
+        d.online_s += Math.max(0, w.last_heartbeat - w.registered_at);
+        if (iso(w.registered_at) < d.first_seen) d.first_seen = iso(w.registered_at);
+        if (iso(w.last_heartbeat) > d.last_seen) d.last_seen = iso(w.last_heartbeat);
+        for (const job of jobs) for (const t of job.tasks) {
+          if (t.status !== "done" || t.done_by !== w.id || t.done_at < bounds.since || t.done_at > bounds.until) continue;
+          d.tiles_done++;
+          d.iterations += t.data.reduce((sum, n) => sum + n, 0);
+          d.compute_ms += t.runtime_ms;
+        }
+      }
+      const devices = [...groups.values()];
+      const totalIterations = devices.reduce((sum, d) => sum + d.iterations, 0);
+      for (const d of devices) {
+        d.verified_miter = d.iterations / 1e6;
+        d.share = totalIterations ? Number((d.iterations / totalIterations).toFixed(4)) : 0;
+        delete d.iterations;
+        delete d.latest;
+      }
+      return { generated_at: iso(now), unit: "Miter", basis: "sum of per-pixel iterations in accepted, spot-checked results",
+        totals: { devices: devices.length, tiles_done: devices.reduce((sum, d) => sum + d.tiles_done, 0), verified_miter: totalIterations / 1e6 },
+        devices: TG.rankContributions(devices) };
+    }
+    function contributionsCSV(data) {
+      const fields = ["device_id", "display_name", "owner", "worker_types", "workers", "tiles_done", "verified_miter", "share", "compute_ms", "online_s", "first_seen", "last_seen"];
+      const quote = (value) => {
+        const text = String(value == null ? "" : Array.isArray(value) ? value.join(";") : value);
+        return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+      };
+      const label = (value) => typeof value === "string" && (/^[=+\-@]/.test(value.trimStart()) || /^[\t\r\n]/.test(value)) ? "'" + value : value;
+      return [fields.join(","), ...data.devices.map((d) => fields.map((key) => quote(["display_name", "owner"].includes(key) ? label(d[key]) : d[key])).join(","))].join("\r\n") + "\r\n";
+    }
     function validate(params) {
       const errs = [];
       const allowed = ["width", "height", "tile_size", "max_iter", "x_min", "x_max", "y_min", "y_max"];
@@ -584,6 +651,10 @@
 
       if (p === "/healthz") return { ok: true };
       if (p === "/api/presets") return JSON.parse(JSON.stringify(PRESETS));
+      if (p === "/api/contributions" || p === "/api/contributions.csv") {
+        const data = contributions(q, now);
+        return p.endsWith(".csv") ? contributionsCSV(data) : data;
+      }
 
       if (p === "/api/stats") {
         const order = { online: 0, paused: 1, offline: 2, left: 3 };

@@ -1,7 +1,8 @@
-"""Frozen CONTRACT v1.0 request models (also imported by D's planner)."""
+"""Contract request models (also imported by the parameter-only planner)."""
+from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 
 class RequestModel(BaseModel):
@@ -43,6 +44,13 @@ class RegisterReq(RequestModel):
     has_gpu: bool = False
     task_types: list[str]
     client_info: str | None = Field(default=None, max_length=200)
+    device_id: str | None = Field(default=None, pattern=r'^dev_[a-z0-9]{8,32}$')
+    owner: str | None = Field(default=None, min_length=1, max_length=40)
+
+    @field_validator('owner', mode='before')
+    @classmethod
+    def normalize_owner(cls, value):
+        return (value.strip() or None) if isinstance(value, str) else value
 
 
 class CompleteReq(RequestModel):
@@ -67,3 +75,29 @@ class EmptyReq(RequestModel):
 
 class PlannerReq(RequestModel):
     prompt: str = Field(max_length=500)
+
+
+class ContributionWindow(RequestModel):
+    since: datetime | None = None
+    until: datetime | None = None
+
+    @field_validator('since', 'until', mode='before')
+    @classmethod
+    def parse_iso_time(cls, value):
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError('Use an ISO datetime with Z or a timezone offset')
+        try:
+            parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except ValueError:
+            raise ValueError('Use an ISO datetime with Z or a timezone offset') from None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError('ISO datetime must include Z or a timezone offset')
+        return parsed
+
+    @model_validator(mode='after')
+    def ordered(self):
+        if self.since is not None and self.until is not None and self.since > self.until:
+            raise ValueError('since must not be later than until')
+        return self

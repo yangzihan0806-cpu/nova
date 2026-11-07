@@ -1,7 +1,42 @@
 class TartanContributor {
-    constructor({ name, slots }) {
+    static sessionDeviceId = null;
+
+    static getDeviceId() {
+        if (this.sessionDeviceId) return this.sessionDeviceId;
+        const stores = [];
+        for (const name of ["localStorage", "sessionStorage"]) {
+            try {
+                const storage = globalThis[name];
+                const saved = storage.getItem("tg_device_id");
+                if (/^dev_[a-z0-9]{8,32}$/.test(saved)) {
+                    this.sessionDeviceId = saved;
+                    return saved;
+                }
+                stores.push(storage);
+            } catch (_) {
+                // Privacy settings may deny even access to the storage object.
+            }
+        }
+        const bytes = crypto.getRandomValues(new Uint8Array(8));
+        const deviceId = "dev_" + Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+        for (const storage of stores) {
+            try {
+                storage.setItem("tg_device_id", deviceId);
+                break;
+            } catch (_) {
+                // Try sessionStorage if localStorage is full or unavailable.
+            }
+        }
+        // With both storage APIs blocked, reconnects still share this page's ID.
+        this.sessionDeviceId = deviceId;
+        return deviceId;
+    }
+
+    constructor({ name, slots, owner }) {
         this.name = name;
         this.slots = slots;
+        this.owner = owner?.trim() || null;
+        this.deviceId = TartanContributor.getDeviceId();
         this.state = "idle";
         this.registration = null;
         this.workers = [];
@@ -73,6 +108,8 @@ class TartanContributor {
     async register() {
         const registration = await this.post("/api/workers/register", {
             name: this.name,
+            device_id: this.deviceId,
+            owner: this.owner,
             worker_type: "browser",
             slots: this.slots,
             has_gpu: false,

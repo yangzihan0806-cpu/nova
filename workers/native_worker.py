@@ -7,7 +7,10 @@ from pathlib import Path
 import os
 import platform
 import random
+import re
+import secrets
 import sys
+import tempfile
 import threading
 import time
 from urllib.parse import urlsplit, urlunsplit
@@ -32,9 +35,55 @@ def log(message):
     print(f"[{datetime.now():%H:%M:%S}] {message}", flush=True)
 
 
+def _read_device_id(path):
+    device_id = path.read_text(encoding="ascii").strip()
+    if not re.fullmatch(r"dev_[a-z0-9]{8,32}", device_id):
+        raise ValueError("invalid saved device ID")
+    return device_id
+
+
+def load_device_id():
+    """Reuse a random identity; publish a fully written file without replacing it."""
+    device_id = "dev_" + secrets.token_hex(8)
+    temporary = None
+    try:
+        path = Path.home() / ".tartangrid" / "device_id"
+        try:
+            return _read_device_id(path)
+        except FileNotFoundError:
+            pass
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="ascii", dir=path.parent,
+                                         prefix=".device_id-", delete=False) as handle:
+            temporary = Path(handle.name)
+            handle.write(device_id + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            # Atomic, no-replace publication: concurrent starters use the winner's
+            # complete ID. A plain exclusive open could expose a half-written ID.
+            os.link(temporary, path)
+        except FileExistsError:
+            return _read_device_id(path)
+        return device_id
+    except (OSError, ValueError, RuntimeError) as exc:
+        # Keep any existing file intact, including unreadable or invalid content.
+        log(f"Warning: device identity storage unavailable ({type(exc).__name__}); "
+            "using a session-only device ID. Contributions may split after restart.")
+        return device_id
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                log("Warning: could not remove temporary device identity file")
+
+
 class NativeWorker:
     def __init__(self, args):
         self.args = args
+        self.device_id = load_device_id()
+        self.owner = (getattr(args, "owner", None) or "").strip() or None
         self.server = args.server.rstrip("/")
         # On Windows, "localhost" tries IPv6 (::1) first; uvicorn listens on IPv4 only and
         # Windows takes ~2 s to refuse each new connection, adding ~4 s per tile
@@ -77,6 +126,8 @@ class NativeWorker:
     def register(self):
         response = self.post("/api/workers/register", {
             "name": self.args.name,
+            "device_id": self.device_id,
+            "owner": self.owner,
             "worker_type": "native",
             "slots": self.args.slots,
             "has_gpu": False,
@@ -276,6 +327,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", required=True)
     parser.add_argument("--name", required=True)
+    parser.add_argument("--owner", help="Optional contribution owner (1–40 characters)")
     parser.add_argument("--slots", type=int, choices=range(1, 9), default=2)
     parser.add_argument("--crash-after", type=int)
     parser.add_argument("--max-tasks", type=int)
@@ -283,6 +335,9 @@ def main():
     args = parser.parse_args()
     if not 1 <= len(args.name) <= 40:
         parser.error("--name must contain 1–40 characters")
+    args.owner = (args.owner or "").strip() or None
+    if args.owner is not None and len(args.owner) > 40:
+        parser.error("--owner must contain 1–40 characters")
     if not args.server.startswith(("http://", "https://")):
         parser.error("--server must be an HTTP or HTTPS URL")
     if args.max_tasks is not None and args.max_tasks < 1:

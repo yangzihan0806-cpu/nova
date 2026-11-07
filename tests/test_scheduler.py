@@ -508,3 +508,252 @@ def test_unrepresentable_runtime_is_422_and_keeps_lease(client,database):
         worker_id=w['worker_id'],lease_token=t['lease_token'],result=[1]*1024,runtime_ms=2**63))
     assert response.status_code==422
     assert task_row(database,t['task_id'])['status']=='leased'
+
+
+# Frozen deployed v1.1 schema: exercise real upgrades without deriving it
+# from the implementation being tested.
+LEGACY_SCHEMA = '\nCREATE TABLE IF NOT EXISTS workers (\n  id               TEXT PRIMARY KEY,         -- "wkr_" + 8 hex\n  name             TEXT NOT NULL,\n  worker_type      TEXT NOT NULL,            -- browser | native\n  token            TEXT NOT NULL,\n  slots            INTEGER NOT NULL DEFAULT 1,\n  has_gpu          INTEGER NOT NULL DEFAULT 0,\n  task_types       TEXT NOT NULL,            -- JSON 数组，服务端与 allowlist 取交集\n  client_info      TEXT,\n  paused           INTEGER NOT NULL DEFAULT 0,\n  disconnected     INTEGER NOT NULL DEFAULT 0,\n  offline_notified INTEGER NOT NULL DEFAULT 0,\n  last_heartbeat   REAL NOT NULL,\n  registered_at    REAL NOT NULL,\n  tasks_done       INTEGER NOT NULL DEFAULT 0\n);\nCREATE TABLE IF NOT EXISTS jobs (\n  id          TEXT PRIMARY KEY,              -- "job_" + 6 hex\n  task_type   TEXT NOT NULL,\n  params_json TEXT NOT NULL,\n  status      TEXT NOT NULL,                 -- queued | running | completed | failed | cancelled\n  task_count  INTEGER NOT NULL,\n  created_at  REAL NOT NULL,\n  started_at  REAL,\n  finished_at REAL\n);\nCREATE TABLE IF NOT EXISTS tasks (\n  id            INTEGER PRIMARY KEY AUTOINCREMENT,\n  job_id        TEXT NOT NULL,\n  idx           INTEGER NOT NULL,\n  task_type     TEXT NOT NULL,\n  input_json    TEXT NOT NULL,\n  status        TEXT NOT NULL DEFAULT \'pending\',   -- pending | leased | done | failed\n  worker_id     TEXT,\n  lease_token   TEXT,\n  lease_expires REAL,\n  attempts      INTEGER NOT NULL DEFAULT 0,\n  result_json   TEXT,\n  done_by       TEXT,\n  runtime_ms    INTEGER,\n  done_at       REAL,\n  done_seq      INTEGER                           -- = 完成时插入的 task_done 事件 id\n);\nCREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, job_id, idx);\nCREATE TABLE IF NOT EXISTS events (\n  id        INTEGER PRIMARY KEY AUTOINCREMENT,\n  ts        REAL NOT NULL,\n  type      TEXT NOT NULL,\n  job_id    TEXT,\n  task_id   INTEGER,\n  worker_id TEXT,\n  message   TEXT NOT NULL\n);\n'
+
+
+@pytest.fixture
+def legacy_database(tmp_path, monkeypatch):
+    import sqlite3
+    import db
+    db.close_db()
+    path=tmp_path/'legacy.db'
+    monkeypatch.setenv('TG_DB_PATH',str(path))
+    monkeypatch.setenv('TG_RESET_DB','0')
+    with sqlite3.connect(path) as c:
+        c.executescript(LEGACY_SCHEMA)
+        c.execute("""INSERT INTO workers(id,name,worker_type,token,task_types,last_heartbeat,registered_at,tasks_done)
+                     VALUES ('wkr_old','Legacy device','native','private-test-token','["mandelbrot_v1"]',120,100,2)""")
+        c.execute("INSERT INTO jobs(id,task_type,params_json,status,task_count,created_at) VALUES ('job_old','mandelbrot_v1','{}','completed',2,100)")
+        for index,data in enumerate(('[1,2,3]','[4,5,6]')):
+            c.execute("""INSERT INTO tasks(job_id,idx,task_type,input_json,status,result_json,done_by,runtime_ms,done_at,done_seq)
+                         VALUES ('job_old',?,'mandelbrot_v1','{}','done',?,'wkr_old',10,?,?)""",(index,data,110+index,index+1))
+        c.execute("INSERT INTO events(ts,type,message) VALUES (110,'task_done','legacy event')")
+    yield db
+    db.close_db()
+
+
+@pytest.mark.parametrize('partial',[False,True])
+def test_contribution_migration_preserves_legacy_rows_and_is_repeatable(legacy_database,partial):
+    import os,sqlite3
+    db=legacy_database
+    if partial:
+        with sqlite3.connect(os.environ['TG_DB_PATH']) as c:
+            c.execute('ALTER TABLE workers ADD COLUMN device_id TEXT')
+    for _ in range(2):
+        db.init_db()
+        with db.tx() as c:
+            assert {'device_id','owner'} <= {r['name'] for r in c.execute('PRAGMA table_info(workers)')}
+            assert 'credit_iters' in {r['name'] for r in c.execute('PRAGMA table_info(tasks)')}
+            w=c.execute("SELECT * FROM workers WHERE id='wkr_old'").fetchone()
+            assert w['name']=='Legacy device' and w['tasks_done']==2 and w['device_id'] is None
+            assert c.execute('SELECT count(*) FROM tasks').fetchone()[0]==2
+            assert c.execute('SELECT count(*) FROM jobs').fetchone()[0]==1
+            assert c.execute('SELECT message FROM events').fetchone()[0]=='legacy event'
+            assert 'idx_workers_device' in {r['name'] for r in c.execute('PRAGMA index_list(workers)')}
+
+
+@pytest.mark.parametrize('device_id',['dev_abcdefgh','dev_'+'a'*32,'dev_0123456789abcdef'])
+def test_register_accepts_device_identity_and_normalizes_owner(client,database,device_id):
+    w,h=api_worker(client,device_id=device_id,owner='  hyang2  ')
+    assert set(w)=={'worker_id','token','heartbeat_interval_s','lease_ttl_s'}
+    with database.tx() as c:
+        row=c.execute('SELECT device_id,owner FROM workers WHERE id=?',(w['worker_id'],)).fetchone()
+        assert tuple(row)==(device_id,'hyang2')
+        assert 'owner hyang2' in c.execute("SELECT message FROM events WHERE worker_id=? AND type='worker_joined'",(w['worker_id'],)).fetchone()[0]
+
+
+@pytest.mark.parametrize('extra',[{'device_id':'bad'}, {'device_id':'dev_ABCDEF12'}, {'device_id':'dev_1234567'},
+                                 {'device_id':'dev_'+'a'*33},{'owner':'a'*41},{'owner':12}])
+def test_register_rejects_bad_device_metadata(client,extra):
+    r=client.post('/api/workers/register',json=dict(name='Device',worker_type='native',task_types=['mandelbrot_v1'])|extra)
+    assert r.status_code==422
+
+
+@pytest.mark.parametrize('extra',[{}, {'device_id':None,'owner':None},{'owner':' \t '}])
+def test_old_clients_get_worker_fallback_identity(client,database,extra):
+    w,h=api_worker(client,**extra)
+    with database.tx() as c:
+        row=c.execute('SELECT device_id,owner FROM workers WHERE id=?',(w['worker_id'],)).fetchone()
+        assert tuple(row)==('wkr:'+w['worker_id'],None)
+
+
+def test_contribution_credit_written_only_once_with_eight_samples(scheduler,database,monkeypatch):
+    s=scheduler
+    j=job(s)
+    w=worker(s)
+    task=s.lease(w['worker_id'],100)
+    sampled=[]
+    def pixel(x,y,p):
+        sampled.append((x,y))
+        return 1
+    monkeypatch.setattr(s,'compute_pixel',pixel)
+    assert submit(s,w,task)=={'accepted':True}
+    assert len(sampled)==len(set(sampled))==8
+    assert task_row(database,task['task_id'])['credit_iters']==1024
+    assert_http(409,submit,s,w,task)
+    assert task_row(database,task['task_id'])['credit_iters']==1024
+
+
+def test_contributions_group_sessions_without_multiplying_metadata(scheduler):
+    s=scheduler
+    job(s)
+    a=worker(s,name='Old name',device_id='dev_shared01',owner='old-owner')
+    t=s.lease(a['worker_id'],100)
+    submit(s,a,t,now=102)
+    s.heartbeat(a['worker_id'],110)
+    b=worker(s,now=120,name='New name',worker_type='browser',device_id='dev_shared01',owner='new-owner')
+    for now in (121,122):
+        t=s.lease(b['worker_id'],now)
+        submit(s,b,t,now=now)
+    s.heartbeat(b['worker_id'],150)
+    c=worker(s,now=130,name='Other device',device_id='dev_distinct',owner='new-owner')
+    t=s.lease(c['worker_id'],131)
+    submit(s,c,t,now=132)
+    s.disconnect(c['worker_id'],135)
+    view=s.contributions(None,None,160)
+    assert set(view)=={'generated_at','unit','basis','totals','devices'}
+    assert view['unit']=='Miter'
+    assert view['basis']=='sum of per-pixel iterations in accepted, spot-checked results'
+    assert view['totals']==dict(devices=2,tiles_done=4,verified_miter=0.004096)
+    first,second=view['devices']
+    assert first==dict(device_id='dev_shared01',display_name='New name',owner='new-owner',
+        worker_types=['browser','native'],workers=2,tiles_done=3,verified_miter=0.003072,share=0.75,
+        compute_ms=15,online_s=40.0,first_seen='1970-01-01T00:01:40.000Z',last_seen='1970-01-01T00:02:30.000Z')
+    assert second['device_id']=='dev_distinct' and second['share']==0.25
+    assert sum(d['share'] for d in view['devices'])==pytest.approx(1)
+    bounded=s.contributions(132,132,160)
+    assert bounded['totals']==dict(devices=2,tiles_done=1,verified_miter=0.001024)
+    assert bounded['devices'][0]['device_id']=='dev_distinct' and bounded['devices'][0]['share']==1
+    assert bounded['devices'][1]['online_s']==40.0 and bounded['devices'][1]['workers']==2
+    assert bounded['devices'][1]['tiles_done']==0
+
+
+def test_contribution_credit_excludes_rejection_stale_duplicate_and_reassigned_loser(scheduler,database):
+    s=scheduler
+    job(s)
+    loser=worker(s,device_id='dev_loser123')
+    winner=worker(s,device_id='dev_winner12')
+    t=s.lease(loser['worker_id'],100)
+    assert_http(422,submit,s,loser,t,result=[0]*1024)
+    assert task_row(database,t['task_id'])['credit_iters'] is None
+    assert s.contributions(None,None,101)['totals']['verified_miter']==0
+    old=s.lease(loser['worker_id'],101)
+    s.reap(112)
+    fresh=s.lease(winner['worker_id'],112)
+    assert fresh['task_id']==old['task_id']
+    assert_http(409,submit,s,loser,old,now=113)
+    assert s.contributions(None,None,113)['totals']['tiles_done']==0
+    submit(s,winner,fresh,now=113)
+    assert_http(409,submit,s,winner,fresh,now=114)
+    view=s.contributions(None,None,114)
+    assert view['totals']==dict(devices=2,tiles_done=1,verified_miter=0.001024)
+    assert [(d['device_id'],d['tiles_done'],d['share']) for d in view['devices']]==[
+        ('dev_winner12',1,1.0),('dev_loser123',0,0.0)]
+
+
+def test_contribution_zero_totals_and_old_client_sessions(scheduler):
+    s=scheduler
+    assert s.contributions(None,None,100)['totals']==dict(devices=0,tiles_done=0,verified_miter=0)
+    w=worker(s)
+    v=s.contributions(1000,None,110)
+    assert v['totals']==dict(devices=1,tiles_done=0,verified_miter=0)
+    assert v['devices'][0]['device_id']=='wkr:'+w['worker_id']
+    assert v['devices'][0]['share']==0
+    assert v['devices'][0]['owner'] is None
+
+
+def test_contribution_legacy_results_are_computed_without_backfill(legacy_database):
+    import scheduler as s
+    db=legacy_database
+    db.init_db()
+    v=s.contributions(None,None,130)
+    assert v['totals']==dict(devices=1,tiles_done=2,verified_miter=0.000021)
+    assert v['devices'][0]['device_id']=='wkr:wkr_old'
+    assert v['devices'][0]['compute_ms']==20 and v['devices'][0]['online_s']==20
+    assert s.contributions(110,110,130)['totals']['verified_miter']==0.000006
+    with db.tx() as c:
+        assert c.execute('SELECT count(*) FROM tasks WHERE credit_iters IS NULL').fetchone()[0]==2
+        assert c.execute('SELECT device_id FROM workers').fetchone()[0] is None
+
+
+@pytest.mark.parametrize('query',[{'since':'nonsense'},{'until':'2026-11-07'}, {'since':'100'},
+    {'since':'2026-11-07T12:00:00'}, {'since':'2026-11-07T14:00:00Z','until':'2026-11-07T13:59:59Z'}])
+@pytest.mark.parametrize('path',['/api/contributions','/api/contributions.csv'])
+def test_contribution_invalid_dates_return_422(client,path,query):
+    assert client.get(path,params=query).status_code==422
+
+
+def test_contributions_http_time_filter_and_csv_match(client,scheduler):
+    import csv,io
+    s=scheduler
+    job(s)
+    w=worker(s,name='笔记本, "A"\nsecond line',device_id='dev_csv12345',owner=' owner1 ')
+    for now in (101,102):
+        t=s.lease(w['worker_id'],now)
+        submit(s,w,t,now=now)
+    query={'since':'1970-01-01T01:01:42+01:00','until':'1970-01-01T00:01:42Z'}
+    r=client.get('/api/contributions',params=query)
+    assert r.status_code==200
+    data=r.json()
+    assert data['totals']['tiles_done']==1
+    response=client.get('/api/contributions.csv',params=query)
+    assert response.status_code==200
+    assert response.headers['content-type'].startswith('text/csv')
+    assert response.headers['content-disposition']=='attachment; filename="tartangrid_contributions.csv"'
+    reader=csv.DictReader(io.StringIO(response.text,newline=''))
+    assert reader.fieldnames==['device_id','display_name','owner','worker_types','workers','tiles_done',
+                              'verified_miter','share','compute_ms','online_s','first_seen','last_seen']
+    rows=list(reader)
+    assert len(rows)==1
+    for key,value in data['devices'][0].items():
+        expected=';'.join(value) if key=='worker_types' else '' if value is None else str(value)
+        assert rows[0][key]==expected
+    assert client.get('/api/contributions.csv?since=9999-01-01T00:00:00Z').status_code==200
+
+
+def test_empty_contributions_csv_still_has_header(client):
+    import csv,io
+    r=client.get('/api/contributions.csv')
+    assert r.status_code==200
+    rows=list(csv.reader(io.StringIO(r.text)))
+    assert len(rows)==1 and len(rows[0])==12
+
+
+@pytest.mark.parametrize('name,owner', [
+    ('=1+1', '=HYPERLINK("https://example.org","open")'),
+    ('+1+1', '-1+1'),
+    ('@SUM(1)', '=1'),
+    ('  =1+1', '+1'),
+    ('\tname', '-1'),
+    ('\rname', '@SUM(1)'),
+    ('\nname', '=1'),
+])
+def test_contributions_csv_escapes_formula_labels_without_changing_json(client,scheduler,name,owner):
+    import csv,io
+    worker(scheduler,name=name,device_id='dev_formula1',owner=owner)
+    data=client.get('/api/contributions').json()['devices'][0]
+    assert data['display_name']==name and data['owner']==owner
+    response=client.get('/api/contributions.csv')
+    assert response.status_code==200
+    row=next(csv.DictReader(io.StringIO(response.text,newline='')))
+    assert row['display_name']=="'"+name
+    assert row['owner']=="'"+owner
+    assert row['tiles_done']=='0' and row['verified_miter']=='0.0'
+
+
+def test_contributions_sum_large_accepted_runtimes_without_sqlite_overflow(scheduler):
+    s=scheduler
+    job(s)
+    first=worker(s,device_id='dev_bigsum12')
+    second=worker(s,now=101,device_id='dev_bigsum12')
+    runtime=2**63-1
+    for w in (first,first,second):
+        t=s.lease(w['worker_id'],102)
+        s.complete(t['task_id'],w['worker_id'],t['lease_token'],[1]*1024,runtime,102)
+    view=s.contributions(None,None,103)
+    assert view['devices'][0]['compute_ms']==3*runtime
+    assert view['devices'][0]['tiles_done']==3

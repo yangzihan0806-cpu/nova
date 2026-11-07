@@ -1,4 +1,5 @@
 """Single-process SQLite storage; all SQL is protected by LOCK."""
+import json
 import os
 import sqlite3
 import threading
@@ -12,8 +13,30 @@ HEARTBEAT_S = float(os.getenv("TG_HEARTBEAT_S", "3"))
 OFFLINE_AFTER_S = float(os.getenv("TG_OFFLINE_AFTER_S", "12"))
 MAX_ATTEMPTS = int(os.getenv("TG_MAX_ATTEMPTS", "3"))
 MAX_ACTIVE_JOBS = int(os.getenv("TG_MAX_ACTIVE_JOBS", "2"))
-SPOT_CHECKS = int(os.getenv("TG_SPOT_CHECKS", "4"))
+SPOT_CHECKS = int(os.getenv("TG_SPOT_CHECKS", "8"))
 _conn: sqlite3.Connection | None = None
+
+
+def _legacy_credit_iters(result_json):
+    """Read accepted v1.1 results on demand; never rewrite old task rows."""
+    return sum(json.loads(result_json)) if result_json is not None else 0
+
+
+class _IntegerSum:
+    """Preserve exact totals even when valid per-task runtimes exceed int64 in sum."""
+
+    def __init__(self):
+        self.total = 0
+
+    def step(self, value):
+        if value is not None:
+            self.total += int(value)
+
+    def finalize(self):
+        # SQLite cannot return a Python integer above int64; decode at the API edge.
+        return str(self.total)
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS workers (
   id               TEXT PRIMARY KEY,         -- "wkr_" + 8 hex
@@ -90,7 +113,30 @@ def init_db():
             path.unlink(missing_ok=True)
         _conn = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         _conn.row_factory = sqlite3.Row
+        # stdlib callback keeps the aggregate independent of SQLite JSON1 builds.
+        _conn.create_function('legacy_credit_iters', 1, _legacy_credit_iters, deterministic=True)
+        _conn.create_aggregate('integer_sum', 1, _IntegerSum)
         _conn.executescript(SCHEMA)
+        # Upgrade deployed databases in place. Keep old values NULL so reads
+        # can apply the documented worker-id/result fallback without rewriting.
+        _conn.execute("BEGIN IMMEDIATE")
+        try:
+            for table, additions in (
+                ("workers", (("device_id", "TEXT"), ("owner", "TEXT"))),
+                ("tasks", (("credit_iters", "INTEGER"),)),
+            ):
+                columns = {row["name"] for row in _conn.execute(f"PRAGMA table_info({table})")}
+                for name, kind in additions:
+                    if name not in columns:
+                        _conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+            _conn.execute("CREATE INDEX IF NOT EXISTS idx_workers_device ON workers(device_id)")
+            _conn.execute("COMMIT")
+        except BaseException:
+            if _conn.in_transaction:
+                _conn.execute("ROLLBACK")
+            _conn.close()
+            _conn = None
+            raise
 
 
 def close_db():
