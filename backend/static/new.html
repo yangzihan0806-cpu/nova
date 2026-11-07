@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TartanGrid — New Job</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site"></header>
+  <main style="max-width:1100px">
+    <h1>New job · <span class="mono">mandelbrot_v1</span></h1>
+
+    <section class="panel">
+      <h2>Describe it (AI planner)</h2>
+      <textarea id="prompt" maxlength="500" placeholder="e.g. Render a detailed Mandelbrot image using the available campus computers. Prioritize speed, but keep each browser worker light."></textarea>
+      <div class="btn-row" style="margin-top:10px; align-items:center">
+        <button class="btn" id="plan-btn">Generate config</button>
+        <span class="muted small">The AI only fills in the form below — nothing runs until you press Submit.</span>
+        <span class="muted small num" id="prompt-len" style="margin-left:auto">0/500</span>
+      </div>
+      <div class="note ai" id="plan-out" style="margin-top:12px" hidden>
+        <div class="small" style="color:#9fbfff; font-weight:600">AI suggestion — review before submitting</div>
+        <div id="plan-expl" style="margin-top:4px"></div>
+      </div>
+      <div class="note err" id="plan-err" style="margin-top:12px" hidden></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Parameters</h2>
+        <div style="min-width:280px"><select id="preset"><option value="">Load preset…</option></select></div>
+      </div>
+      <form id="form" novalidate>
+        <div class="form-grid">
+          <div><label for="width">width (px)</label><input type="number" id="width" step="1" min="64" max="4096"></div>
+          <div><label for="height">height (px)</label><input type="number" id="height" step="1" min="64" max="4096"></div>
+          <div><label for="tile_size">tile_size</label>
+            <select id="tile_size"><option>32</option><option selected>64</option><option>128</option></select></div>
+          <div><label for="max_iter">max_iter</label><input type="number" id="max_iter" step="1" min="1" max="20000"></div>
+          <div><label for="x_min">x_min</label><input type="number" id="x_min" step="any"></div>
+          <div><label for="x_max">x_max</label><input type="number" id="x_max" step="any"></div>
+          <div><label for="y_min">y_min</label><input type="number" id="y_min" step="any"></div>
+          <div><label for="y_max">y_max</label><input type="number" id="y_max" step="any"></div>
+        </div>
+        <div style="margin-top:14px" class="num">task_count = <strong id="task-count">—</strong></div>
+        <div class="note warn small" id="checks" style="margin-top:10px" hidden></div>
+        <div class="note err" id="submit-err" style="margin-top:10px" hidden></div>
+        <div class="btn-row" style="margin-top:14px">
+          <button class="btn primary big" type="submit" id="submit">Submit job</button>
+        </div>
+        <p class="muted small">Checks above are a preview only — the server validates every field and has the final say.</p>
+      </form>
+    </section>
+  </main>
+  <footer class="site"></footer>
+
+  <script src="common.js"></script>
+  <script>
+    "use strict";
+    TG.renderChrome("new");
+    const INT_FIELDS = ["width", "height", "tile_size", "max_iter"];
+    const FLOAT_FIELDS = ["x_min", "x_max", "y_min", "y_max"];
+    const FIELDS = [...INT_FIELDS, ...FLOAT_FIELDS];
+    const FALLBACK = { width: 512, height: 384, tile_size: 64, max_iter: 256, x_min: -2.2, x_max: 1.0, y_min: -1.2, y_max: 1.2 };
+
+    function fill(params) {
+      for (const k of FIELDS) if (params[k] !== undefined) TG.$("#" + k).value = String(params[k]);
+      update();
+    }
+
+    /** Read the form. Empty / unparsable fields become null (server will report them). */
+    function read() {
+      const p = {};
+      for (const k of FIELDS) {
+        const raw = TG.$("#" + k).value.trim();
+        const v = raw === "" ? NaN : Number(raw);
+        p[k] = Number.isFinite(v) ? v : null;
+      }
+      return p;
+    }
+
+    function clientChecks(p) {
+      const w = [];
+      for (const k of FIELDS) if (p[k] === null) w.push(`${k}: required number`);
+      for (const k of INT_FIELDS) if (p[k] !== null && !Number.isInteger(p[k])) w.push(`${k}: must be an integer`);
+      const ts = p.tile_size;
+      for (const k of ["width", "height"]) {
+        if (p[k] === null) continue;
+        if (p[k] < 64 || p[k] > 4096) w.push(`${k}: must be between 64 and 4096`);
+        else if (ts && p[k] % ts) w.push(`${k}: must be a multiple of tile_size (${ts})`);
+      }
+      if (p.max_iter !== null && (p.max_iter < 1 || p.max_iter > 20000)) w.push("max_iter: must be between 1 and 20000");
+      for (const k of FLOAT_FIELDS) if (p[k] !== null && Math.abs(p[k]) > 4) w.push(`${k}: |value| must be ≤ 4`);
+      if (p.x_min !== null && p.x_max !== null && !(p.x_min < p.x_max)) w.push("x_min must be < x_max");
+      if (p.y_min !== null && p.y_max !== null && !(p.y_min < p.y_max)) w.push("y_min must be < y_max");
+      const tc = taskCount(p);
+      if (tc !== null && tc > 4096) w.push(`task_count ${tc} exceeds 4096 — use a larger tile_size`);
+      return w;
+    }
+    function taskCount(p) {
+      if (!p.width || !p.height || !p.tile_size) return null;
+      if (p.width % p.tile_size || p.height % p.tile_size) return null;
+      return (p.width / p.tile_size) * (p.height / p.tile_size);
+    }
+
+    function update() {
+      const p = read();
+      const tc = taskCount(p);
+      TG.$("#task-count").textContent = tc === null ? "—" : `(${p.width}/${p.tile_size}) · (${p.height}/${p.tile_size}) = ${tc}`;
+      const w = clientChecks(p);
+      const box = TG.$("#checks");
+      box.textContent = w.length ? "Heads-up (server will decide):\n• " + w.join("\n• ") : "";
+      box.hidden = !w.length;
+    }
+    for (const k of FIELDS) TG.$("#" + k).addEventListener("input", update);
+    TG.$("#tile_size").addEventListener("change", update);
+
+    // ---------- presets ----------
+    let presets = [];
+    (async () => {
+      try {
+        presets = (await TG.api("/api/presets")) || [];
+      } catch (e) {
+        TG.setBanner("Could not load presets (" + e.message + ") — using built-in defaults.");
+      }
+      const sel = TG.$("#preset");
+      for (const pr of presets) sel.appendChild(TG.el("option", { value: pr.id }, pr.label || pr.id));
+      const first = presets.find((x) => x.id === "quick") || presets[0];
+      if (first) { sel.value = first.id; fill(first.params); } else fill(FALLBACK);
+    })();
+    TG.$("#preset").addEventListener("change", (e) => {
+      const pr = presets.find((x) => x.id === e.target.value);
+      if (pr) { fill(pr.params); TG.$("#plan-out").hidden = true; }
+    });
+
+    // ---------- AI planner ----------
+    const promptEl = TG.$("#prompt");
+    promptEl.addEventListener("input", () => { TG.$("#prompt-len").textContent = promptEl.value.length + "/500"; });
+    TG.$("#plan-btn").addEventListener("click", async () => {
+      const prompt = promptEl.value.trim();
+      const out = TG.$("#plan-out"), err = TG.$("#plan-err"), btn = TG.$("#plan-btn");
+      out.hidden = err.hidden = true;
+      if (!prompt) { err.textContent = "Type a description first."; err.hidden = false; return; }
+      btn.disabled = true; btn.textContent = "Thinking…";
+      try {
+        const r = await TG.api("/api/planner", { method: "POST", body: { prompt } });
+        fill(r.params || {});
+        TG.$("#preset").value = "";
+        TG.$("#plan-expl").textContent = r.explanation || "(no explanation)";
+        out.hidden = false;
+      } catch (e) {
+        if (e.status === 503) err.textContent = "AI planner unavailable — use the form below.";
+        else if (e.status === 422 && e.detail === "planner_invalid_output") err.textContent = "AI produced an invalid config — try rephrasing or use the form.";
+        else if (e.status === 422) err.textContent = "Prompt rejected: " + e.message;
+        else err.textContent = "AI planner error — use the form below. (" + e.message + ")";
+        err.hidden = false;
+      } finally {
+        btn.disabled = false; btn.textContent = "Generate config";
+      }
+    });
+
+    // ---------- submit ----------
+    TG.$("#form").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const err = TG.$("#submit-err"), btn = TG.$("#submit");
+      err.hidden = true;
+      btn.disabled = true; btn.textContent = "Submitting…";
+      try {
+        const r = await TG.api("/api/jobs", { method: "POST", body: { task_type: "mandelbrot_v1", params: read() } });
+        location.href = TG.link("/job.html?id=" + encodeURIComponent(r.job_id));
+      } catch (e) {
+        if (e.status === 429) {
+          err.replaceChildren("Too many active jobs — wait for a running job to finish. ",
+            TG.el("a", { href: TG.link("/") }, "Open dashboard"));
+        } else if (e.status === 422) {
+          err.textContent = "Server rejected the parameters:\n" + e.message;
+        } else {
+          err.textContent = "Submit failed: " + e.message;
+        }
+        err.hidden = false;
+      } finally {
+        btn.disabled = false; btn.textContent = "Submit job";
+      }
+    });
+  </script>
+</body>
+</html>

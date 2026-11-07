@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TartanGrid — Contribute</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site"></header>
+  <main>
+    <h1>Contribute this device</h1>
+    <div class="contrib-layout">
+      <section class="panel">
+        <div class="note">
+          <p style="margin-top:0"><strong>What happens:</strong> while this tab is open and you have pressed Start,
+            this browser renders small Mandelbrot image tiles for TartanGrid jobs and sends the results back.</p>
+          <ul style="margin:0; padding-left:18px">
+            <li>Only the reviewed <span class="mono">mandelbrot_v1</span> template runs — no uploaded code.</li>
+            <li>Default is 1 slot (one background worker thread).</li>
+            <li>You can pause or disconnect at any time.</li>
+            <li><strong>Closing this tab stops contributing.</strong> Unfinished tiles are reassigned to other devices.</li>
+          </ul>
+        </div>
+
+        <div class="form-grid" style="grid-template-columns: 2fr 1fr; margin-top:14px">
+          <div><label for="name">Node name</label><input type="text" id="name" maxlength="40" autocomplete="off"></div>
+          <div><label for="slots">Slots</label>
+            <select id="slots"><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
+        </div>
+        <label class="check" style="margin-top:12px"><input type="checkbox" id="auto-pause" checked> Pause when this tab is hidden</label>
+        <div class="note err small" id="form-err" style="margin-top:12px" hidden></div>
+
+        <div class="btn-row" style="margin-top:16px">
+          <button class="btn primary big" id="start">Start contributing</button>
+          <button class="btn big" id="pause" disabled>Pause</button>
+          <button class="btn big" id="resume" disabled>Resume</button>
+          <button class="btn big" id="stop" disabled>Disconnect</button>
+        </div>
+        <div class="note warn small" id="not-loaded" style="margin-top:14px" hidden>contributor.js not loaded yet — the worker code hasn't been deployed. The page will work once it is.</div>
+      </section>
+
+      <section class="panel">
+        <h2>This device</h2>
+        <div class="state-big" id="state"><span class="status status-idle">idle</span></div>
+        <dl class="kv" style="margin-top:12px">
+          <dt>Worker id</dt><dd id="s-worker">—</dd>
+          <dt>Slots</dt><dd id="s-slots">—</dd>
+          <dt>Tasks done</dt><dd id="s-done">0</dd>
+          <dt>Current task</dt><dd id="s-current">—</dd>
+          <dt>Last runtime</dt><dd id="s-last">—</dd>
+          <dt>Last error</dt><dd id="s-error">—</dd>
+        </dl>
+        <h2 style="margin-top:16px">Local log</h2>
+        <ul class="local-log" id="log"></ul>
+      </section>
+    </div>
+  </main>
+  <footer class="site"></footer>
+
+  <script src="common.js"></script>
+  <script>
+    "use strict";
+    TG.renderChrome("contribute");
+
+    // ---------- node name (remembered; storage may be unavailable) ----------
+    const nameInput = TG.$("#name");
+    let saved = null;
+    try { saved = localStorage.getItem("tg_node_name"); } catch (_) {}
+    nameInput.value = saved || "Browser-" + String(Math.floor(1000 + Math.random() * 9000));
+    nameInput.addEventListener("change", () => { try { localStorage.setItem("tg_node_name", nameInput.value.trim()); } catch (_) {} });
+
+    // ---------- load C's scripts (mock mode uses TG.MockContributor instead) ----------
+    let Impl = null;
+    function loadScript(src) {
+      return new Promise((resolve) => {
+        const s = document.createElement("script");
+        s.src = src;
+        s.onload = () => resolve(true);
+        s.onerror = () => resolve(false);
+        document.head.appendChild(s);
+      });
+    }
+    const ready = (async () => {
+      if (TG.MOCK) { Impl = TG.MockContributor; return; }
+      await loadScript("mandelbrot_kernel.js");
+      await loadScript("contributor.js");
+      if (typeof window.TartanContributor === "function") Impl = window.TartanContributor;
+      else TG.$("#not-loaded").hidden = false;
+      setButtons();
+    })();
+
+    // ---------- state ----------
+    let c = null;
+    let state = "idle";
+    let manualPause = false, autoPaused = false, busy = false;
+    const logLines = [];
+
+    function log(msg) {
+      logLines.unshift(new Date().toLocaleTimeString([], { hour12: false }) + "  " + msg);
+      logLines.length = Math.min(logLines.length, 20);
+      TG.$("#log").replaceChildren(...logLines.map((l) => TG.el("li", null, l)));
+    }
+
+    function setButtons() {
+      const can = !!Impl && !busy;
+      TG.$("#start").disabled = !can || !["idle", "stopped", "error"].includes(state);
+      TG.$("#pause").disabled = !can || state !== "running";
+      TG.$("#resume").disabled = !can || state !== "paused";
+      TG.$("#stop").disabled = !can || !["running", "paused", "connecting", "error"].includes(state) || !c;
+      nameInput.disabled = TG.$("#slots").disabled = !["idle", "stopped", "error"].includes(state);
+    }
+
+    function onStatus(s) {
+      state = s.state || state;
+      TG.$("#state").replaceChildren(TG.statusBadge(state));
+      TG.$("#s-worker").textContent = s.workerId || "—";
+      TG.$("#s-slots").textContent = s.slots ?? "—";
+      TG.$("#s-done").textContent = s.tasksDone ?? 0;
+      TG.$("#s-current").textContent = s.currentTaskIds && s.currentTaskIds.length ? s.currentTaskIds.map((i) => "#" + i).join(", ") : "—";
+      TG.$("#s-last").textContent = s.lastRuntimeMs != null ? (s.lastRuntimeMs / 1000).toFixed(2) + " s" : "—";
+      TG.$("#s-error").textContent = s.lastError || "—";
+      setButtons();
+    }
+
+    async function run(label, fn) {
+      busy = true; setButtons();
+      try { await fn(); }
+      catch (e) {
+        log(label + " failed: " + e.message);
+        const err = TG.$("#form-err");
+        err.textContent = label + " failed: " + e.message;
+        err.hidden = false;
+      }
+      finally { busy = false; setButtons(); }
+    }
+
+    // ---------- buttons ----------
+    TG.$("#start").addEventListener("click", () => run("Start", async () => {
+      await ready;
+      if (!Impl) return;
+      const name = nameInput.value.trim();
+      if (name.length < 1 || name.length > 40) throw new Error("Node name must be 1–40 characters.");
+      try { localStorage.setItem("tg_node_name", name); } catch (_) {}
+      TG.$("#form-err").hidden = true;
+      manualPause = autoPaused = false;
+      c = new Impl({ name, slots: parseInt(TG.$("#slots").value, 10) });   // fresh instance every Start
+      c.on("status", onStatus);
+      c.on("log", log);
+      c.on("task_done", (e) => log(`task #${e.taskId} done in ${(e.runtimeMs / 1000).toFixed(2)}s`));
+      log(`starting as "${name}"…`);
+      await c.start();
+      if (document.hidden && TG.$("#auto-pause").checked) await autoPause();
+    }));
+    TG.$("#pause").addEventListener("click", () => run("Pause", async () => { manualPause = true; autoPaused = false; await c.pause(); }));
+    TG.$("#resume").addEventListener("click", () => run("Resume", async () => { manualPause = false; autoPaused = false; await c.resume(); }));
+    TG.$("#stop").addEventListener("click", () => run("Disconnect", async () => { await c.stop(); }));
+
+    // ---------- auto pause when hidden ----------
+    async function autoPause() {
+      if (!c || state !== "running" || manualPause) return;
+      autoPaused = true;
+      log("tab hidden → pausing");
+      await c.pause();
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (!TG.$("#auto-pause").checked || !c) return;
+      if (document.hidden) {
+        autoPause().catch((e) => log("auto-pause failed: " + e.message));
+      } else if (autoPaused && !manualPause && state === "paused") {
+        autoPaused = false;
+        log("tab visible → resuming");
+        c.resume().catch((e) => log("auto-resume failed: " + e.message));
+      }
+    });
+
+    setButtons();
+  </script>
+</body>
+</html>
